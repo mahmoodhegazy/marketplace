@@ -1,0 +1,154 @@
+# Freak AI Configuration
+# Fashion Resale Marketplace Recommendation System
+
+project:
+  name: "freak-ai"
+  version: "0.1.0"
+  description: "AI-powered recommendation system for Freak fashion resale marketplace"
+
+# Data Configuration
+data:
+  raw_items_path: "data/raw/items.csv"
+  raw_events_path: "data/raw/user_events.csv"
+  processed_dir: "data/processed"
+  embeddings_dir: "data/embeddings"
+  
+  # Event weights for implicit feedback
+  event_weights:
+    save: 1.0
+    cart: 3.0
+    order: 5.0
+  
+  # Train/test split
+  test_size: 0.2
+  validation_size: 0.1
+  random_seed: 42
+
+# FashionCLIP Embedding Configuration
+embeddings:
+  model_name: "patrickjohncyh/fashion-clip"
+  embedding_dim: 512
+  batch_size: 32
+  device: "cuda"  # or "cpu"
+  cache_embeddings: true
+  image_size: 224
+
+# Two-Tower Model Configuration
+two_tower:
+  # User Tower
+  user_tower:
+    embedding_dim: 64
+    hidden_layers: [128, 64]
+    dropout: 0.2
+    l2_reg: 1e-5
+  
+  # Item Tower
+  item_tower:
+    embedding_dim: 64
+    hidden_layers: [256, 128, 64]
+    dropout: 0.2
+    l2_reg: 1e-5
+    use_visual_features: true
+    visual_embedding_dim: 512
+  
+  # Shared config
+  final_embedding_dim: 32
+  temperature: 0.1
+
+# Training Configuration
+training:
+  batch_size: 1024
+  epochs: 50
+  learning_rate: 0.001
+  optimizer: "adam"
+  early_stopping_patience: 5
+  reduce_lr_patience: 3
+  min_lr: 1e-6
+  
+  # Negative sampling
+  num_negatives: 4
+  hard_negative_ratio: 0.3
+  
+  # Checkpointing
+  checkpoint_dir: "checkpoints"
+  save_best_only: true
+
+# Evaluation Configuration
+evaluation:
+  metrics:
+    - "precision_at_k"
+    - "recall_at_k"
+    - "ndcg_at_k"
+    - "mrr"
+    - "coverage"
+    - "diversity"
+  k_values: [5, 10, 20, 50]
+  eval_batch_size: 256
+
+# Serving Configuration
+serving:
+  host: "0.0.0.0"
+  port: 8000
+  
+  # Redis caching
+  redis:
+    host: "localhost"
+    port: 6379
+    db: 0
+    cache_ttl: 3600  # 1 hour
+  
+  # Vector search
+  faiss:
+    index_type: "IVFFlat"
+    nlist: 100
+    nprobe: 10
+  
+  # Recommendation settings
+  default_top_k: 20
+  fallback_strategy: "trending"
+  
+  # Session-based settings
+  cold_user_threshold: 5
+  warm_user_threshold: 20
+
+# Feature Store Configuration
+features:
+  user_features:
+    - "interaction_count"
+    - "category_preferences"
+    - "brand_preferences"
+    - "price_range"
+    - "condition_preferences"
+    - "recency_score"
+  
+  item_features:
+    - "category_id"
+    - "brand_id"
+    - "condition_id"
+    - "size_id"
+    - "price_normalized"
+    - "days_listed"
+    - "visual_embedding"
+
+# MLflow Configuration
+mlflow:
+  tracking_uri: "mlruns"
+  experiment_name: "freak-recommendations"
+  log_models: true
+  log_artifacts: true
+
+# Arabic NLP Configuration
+arabic_nlp:
+  enable_dialect_detection: true
+  supported_dialects:
+    - "MSA"
+    - "Egyptian"
+    - "Gulf"
+  enable_arabizi: true
+  
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "{time:YYYY-MM-DD HH:mm:ss} | {level} | {module}:{function}:{line} | {message}"
+  rotation: "10 MB"
+  retention: "7 days"
