@@ -1,10 +1,10 @@
-# Freak AI - Fashion Resale Recommendation System
+# Fashion Resale Recommendation System
 
-<p align="center">
+<!-- <p align="center">
   <img src="docs/logo.png" alt="Freak AI Logo" width="200"/>
-</p>
+</p> -->
 
-> AI-powered recommendation system for Freak fashion resale marketplace, serving the MENA region.
+> AI-powered recommendation system for fashion resale marketplace, serving the MENA region.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
@@ -12,7 +12,7 @@
 
 ## 🎯 Overview
 
-Freak AI is a production-ready recommendation system designed for fashion resale marketplaces. It combines state-of-the-art visual embeddings (FashionCLIP) with a two-tower neural network architecture to deliver personalized recommendations.
+This is a production-ready recommendation system designed for fashion resale marketplaces. It combines state-of-the-art visual embeddings (FashionCLIP) with a two-tower neural network architecture to deliver personalized recommendations.
 
 ### Key Features
 
@@ -27,25 +27,25 @@ Freak AI is a production-ready recommendation system designed for fashion resale
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         Freak AI System                          │
+│                              AI System                          │
 ├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
+│                                                                 │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐  │
 │  │  User App   │───▶│  FastAPI    │───▶│  Recommendation     │  │
 │  │  (Mobile)   │    │  Server     │    │  Engine             │  │
 │  └─────────────┘    └─────────────┘    └─────────────────────┘  │
-│                            │                     │               │
-│                            ▼                     ▼               │
+│                            │                     │              │
+│                            ▼                     ▼              │
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐  │
 │  │  Redis      │    │  PostgreSQL │    │  FAISS Index        │  │
 │  │  Cache      │    │  + pgvector │    │  (Item Embeddings)  │  │
 │  └─────────────┘    └─────────────┘    └─────────────────────┘  │
-│                                                                  │
+│                                                                 │
 ├─────────────────────────────────────────────────────────────────┤
-│                       Model Components                           │
-│                                                                  │
+│                       Model Components                          │
+│                                                                 │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │                   Two-Tower Model                         │   │
+│  │                   Two-Tower Model                        │   │
 │  │  ┌────────────┐              ┌────────────────────────┐  │   │
 │  │  │ User Tower │              │     Item Tower         │  │   │
 │  │  │            │              │                        │  │   │
@@ -57,7 +57,7 @@ Freak AI is a production-ready recommendation system designed for fashion resale
 │  │  │  32-dim    │◄────────────▶│      32-dim            │  │   │
 │  │  └────────────┘   Dot Product└────────────────────────┘  │   │
 │  └──────────────────────────────────────────────────────────┘   │
-│                                                                  │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -74,8 +74,8 @@ Freak AI is a production-ready recommendation system designed for fashion resale
 
 ```bash
 # Clone the repository
-git clone https://github.com/freak-app/freak-ai.git
-cd freak-ai
+git clone https://github.com/mahmoodhegazy/marketplace.git
+cd marketplace
 
 # Create virtual environment
 python -m venv venv
@@ -122,7 +122,7 @@ uvicorn src.serving.api:app --reload --host 0.0.0.0 --port 8000
 ## 📁 Project Structure
 
 ```
-freak-ai/
+marketplace/
 ├── configs/
 │   └── config.yaml           # Main configuration
 ├── data/
@@ -216,7 +216,7 @@ curl -X POST "http://localhost:8000/recommendations/session" \
       "score": 0.89,
       "category": "Dresses",
       "brand": "Zara",
-      "price": 250.00
+      "price": 250.0
     }
   ],
   "strategy": "personalized",
@@ -229,12 +229,14 @@ curl -X POST "http://localhost:8000/recommendations/session" \
 ### Data Format
 
 **items.csv**:
+
 ```csv
 item_id,category_id,brand_id,condition_id,size_id,price,image_urls
 1,1,10,2,3,250.00,"[""https://...""]"
 ```
 
 **user_events.csv**:
+
 ```csv
 user_id,item_id,event,timestamp
 1001,1,save,2024-01-20 10:30:00
@@ -258,6 +260,7 @@ MLFLOW_TRACKING_URI=http://localhost:5000 python scripts/train.py
 ### Metrics
 
 The system evaluates on standard ranking metrics:
+
 - **Precision@K**: Fraction of relevant items in top-K
 - **Recall@K**: Fraction of relevant items retrieved
 - **NDCG@K**: Normalized Discounted Cumulative Gain
@@ -304,6 +307,7 @@ docker-compose --profile production up -d
 ### MLflow Dashboard
 
 Access at `http://localhost:5000` to view:
+
 - Training metrics over time
 - Model comparisons
 - Hyperparameter tracking
@@ -319,6 +323,7 @@ curl http://localhost:8000/health
 ## 🌍 MENA Localization
 
 The system supports Arabic through CAMeL Tools:
+
 - Arabic text search queries
 - Arabizi (Franco-Arab) handling
 - Egyptian and Gulf dialect support
@@ -345,10 +350,9 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [FashionCLIP](https://github.com/patrickjohncyh/fashion-clip) for visual embeddings
 - [CAMeL Tools](https://github.com/CAMeL-Lab/camel_tools) for Arabic NLP
 - [FAISS](https://github.com/facebookresearch/faiss) for similarity search
-- Anthropic Claude for development assistance
 
----
+<!-- ---
 
 <p align="center">
   Made with ❤️ by the Freak Team
-</p>
+</p> -->
