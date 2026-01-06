@@ -134,8 +134,10 @@ class Trainer:
         """Set up MLflow experiment tracking."""
         try:
             import mlflow
-            
-            mlflow.set_experiment(self.experiment_name)
+
+            # Use default experiment name if none provided
+            exp_name = self.experiment_name or "freak-recommendations"
+            mlflow.set_experiment(exp_name)
             self.mlflow_run = mlflow.start_run()
             
             # Log config
