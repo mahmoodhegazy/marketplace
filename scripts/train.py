@@ -168,7 +168,7 @@ def generate_embeddings(
     elif alt_embeddings_path.exists() and alt_item_ids_path.exists():
         logger.info(f"Loading cached embeddings from {alt_embeddings_path}")
         embeddings = np.load(alt_embeddings_path)
-        item_ids = np.load(alt_item_ids_path).tolist()
+        item_ids = [int(x) for x in np.load(alt_item_ids_path).tolist()]
         return embeddings, item_ids
 
     if skip:
