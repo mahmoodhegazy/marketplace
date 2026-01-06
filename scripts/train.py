@@ -170,6 +170,12 @@ def generate_embeddings(
         embeddings = np.load(alt_embeddings_path)
         # Handle item IDs that may have comma separators (e.g., "1,000")
         item_ids = [int(str(x).replace(',', '')) for x in np.load(alt_item_ids_path).tolist()]
+        # Check for NaN in loaded embeddings
+        nan_count = np.isnan(embeddings).sum()
+        if nan_count > 0:
+            logger.warning(f"Loaded embeddings contain {nan_count} NaN values, replacing with zeros")
+            embeddings = np.nan_to_num(embeddings, nan=0.0)
+        logger.info(f"Loaded {len(item_ids)} embeddings, shape: {embeddings.shape}")
         return embeddings, item_ids
 
     if skip:
@@ -315,7 +321,21 @@ def train_model(
             mapped_count += 1
 
     logger.info(f"Mapped {mapped_count}/{len(embedding_item_ids)} visual embeddings to item indices")
-    
+
+    if mapped_count == 0:
+        logger.warning("WARNING: No embeddings were mapped! Check if item_ids match between embeddings and processor")
+        # Debug: show sample item IDs from both sources
+        sample_emb_ids = embedding_item_ids[:5] if len(embedding_item_ids) > 0 else []
+        sample_proc_ids = list(item_id_to_idx.keys())[:5]
+        logger.warning(f"Sample embedding item_ids: {sample_emb_ids}")
+        logger.warning(f"Sample processor item_ids: {sample_proc_ids}")
+
+    # Check for NaN in embeddings
+    nan_count = np.isnan(full_embeddings).sum()
+    if nan_count > 0:
+        logger.warning(f"Found {nan_count} NaN values in visual embeddings, replacing with zeros")
+        full_embeddings = np.nan_to_num(full_embeddings, nan=0.0)
+
     # Initialize model (pass two_tower config, not main config)
     model = TwoTowerModel(
         config=config.two_tower,
@@ -376,7 +396,7 @@ def build_index(
 
     two_tower_retriever = FAISSRetriever(
         dim=config.two_tower.final_embedding_dim,
-        index_type="IVFFlat",
+        index_type="ivf",
         metric='cosine',
     )
     two_tower_retriever.build(item_embeddings_np, item_ids)
@@ -387,7 +407,7 @@ def build_index(
     # Build visual embeddings index
     visual_retriever = FAISSRetriever(
         dim=visual_embeddings.shape[1],
-        index_type="IVFFlat",
+        index_type="ivf",
         metric='cosine',
     )
     visual_retriever.build(visual_embeddings, embedding_item_ids)
