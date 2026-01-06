@@ -455,7 +455,7 @@ def main():
     logger.info("=" * 60)
     
     # Load config
-    config = Config.from_yaml(args.config)
+    config = Config(args.config)
     
     # Apply command line overrides
     if args.data_path:
