@@ -284,22 +284,35 @@ def train_model(
     embedding_item_ids: list,
     train_loader: DataLoader,
     val_loader: DataLoader,
+    processor: DataProcessor,
     experiment_name: str = None,
 ) -> TwoTowerModel:
     """Train two-tower model."""
     logger.info("Initializing model...")
-    
+
     # Create embedding lookup
     embedding_dim = visual_embeddings.shape[1] if len(visual_embeddings) > 0 else 512
-    
+
     # Create full embedding matrix with zeros for items without embeddings
     num_items = vocab_sizes['item']
     full_embeddings = np.zeros((num_items, embedding_dim), dtype=np.float32)
-    
-    item_id_to_idx = {item_id: i for i, item_id in enumerate(embedding_item_ids)}
+
+    # Build item_id -> item_idx mapping from processor's encoder
+    # The model uses item_idx (0 to N-1), not item_id (original IDs)
+    item_id_to_idx = dict(zip(
+        processor.item_encoder.classes_,
+        range(len(processor.item_encoder.classes_))
+    ))
+
+    # Populate embeddings using item_idx, not item_id
+    mapped_count = 0
     for item_id, embedding in zip(embedding_item_ids, visual_embeddings):
-        if item_id < num_items:
-            full_embeddings[item_id] = embedding
+        if item_id in item_id_to_idx:
+            item_idx = item_id_to_idx[item_id]
+            full_embeddings[item_idx] = embedding
+            mapped_count += 1
+
+    logger.info(f"Mapped {mapped_count}/{len(embedding_item_ids)} visual embeddings to item indices")
     
     # Initialize model (pass two_tower config, not main config)
     model = TwoTowerModel(
@@ -507,6 +520,7 @@ def main():
                 embedding_item_ids=embedding_item_ids,
                 train_loader=train_loader,
                 val_loader=val_loader,
+                processor=processor,
                 experiment_name=args.experiment_name,
             )
         else:
