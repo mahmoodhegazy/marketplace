@@ -299,16 +299,18 @@ def train_model(
 
     # Build item_id -> item_idx mapping from processor's encoder
     # The model uses item_idx (0 to N-1), not item_id (original IDs)
-    item_id_to_idx = dict(zip(
-        processor.item_encoder.classes_,
-        range(len(processor.item_encoder.classes_))
-    ))
+    # Convert classes_ to same type as embedding_item_ids for reliable matching
+    item_id_to_idx = {
+        int(item_id): idx
+        for idx, item_id in enumerate(processor.item_encoder.classes_)
+    }
 
     # Populate embeddings using item_idx, not item_id
     mapped_count = 0
     for item_id, embedding in zip(embedding_item_ids, visual_embeddings):
-        if item_id in item_id_to_idx:
-            item_idx = item_id_to_idx[item_id]
+        item_id_int = int(item_id)
+        if item_id_int in item_id_to_idx:
+            item_idx = item_id_to_idx[item_id_int]
             full_embeddings[item_idx] = embedding
             mapped_count += 1
 
@@ -367,9 +369,9 @@ def build_index(
     # Build two-tower item embeddings index
     model.eval()
     with torch.no_grad():
-        item_embeddings = model.generate_all_item_embeddings()
+        item_embeddings = model.generate_all_item_embeddings(items_df)
 
-    item_embeddings_np = item_embeddings.cpu().numpy()
+    item_embeddings_np = item_embeddings
     item_ids = list(range(len(item_embeddings_np)))
 
     two_tower_retriever = FAISSRetriever(
