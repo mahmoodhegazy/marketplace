@@ -134,14 +134,14 @@ def load_data(config: Config) -> tuple:
     # Encode features (works on internal state, returns encoded dfs)
     items_df, interactions_df = processor.encode_features()
 
-    # Get vocab sizes from processor
+    # Get vocab sizes from processor (use keys expected by TwoTowerModel)
     vocab_sizes = {
-        'num_users': processor.vocab_sizes['user'],
-        'num_items': processor.vocab_sizes['item'],
-        'num_categories': processor.vocab_sizes['category'],
-        'num_brands': processor.vocab_sizes['brand'],
-        'num_conditions': processor.vocab_sizes['condition'],
-        'num_sizes': processor.vocab_sizes['size'],
+        'user': processor.vocab_sizes['user'],
+        'item': processor.vocab_sizes['item'],
+        'category': processor.vocab_sizes['category'],
+        'brand': processor.vocab_sizes['brand'],
+        'condition': processor.vocab_sizes['condition'],
+        'size': processor.vocab_sizes['size'],
     }
     logger.info(f"Vocab sizes: {vocab_sizes}")
 
