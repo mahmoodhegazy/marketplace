@@ -127,8 +127,7 @@ class Trainer:
             mode='min',
             factor=0.5,
             patience=self.config.reduce_lr_patience,
-            min_lr=self.config.min_lr,
-            verbose=True,
+            min_lr=float(self.config.min_lr),
         )
     
     def _setup_mlflow(self):
