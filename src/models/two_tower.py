@@ -160,19 +160,27 @@ class UserTower(nn.Module):
         """
         # Get user ID embedding
         user_emb = self.user_embedding(user_idx)  # (batch, embedding_dim)
-        
+        batch_size = user_emb.size(0)
+        device = user_emb.device
+
         embeddings = [user_emb]
-        
-        # Add category preference embeddings
-        if self.num_categories > 0 and category_prefs is not None:
-            cat_emb = self.category_embedding(category_prefs)  # (batch, 3, 16)
-            cat_emb = cat_emb.view(cat_emb.size(0), -1)  # (batch, 48)
+
+        # Add category preference embeddings (use zeros if not provided)
+        if self.num_categories > 0:
+            if category_prefs is not None:
+                cat_emb = self.category_embedding(category_prefs)  # (batch, 3, 16)
+                cat_emb = cat_emb.view(cat_emb.size(0), -1)  # (batch, 48)
+            else:
+                cat_emb = torch.zeros(batch_size, 16 * 3, device=device)  # (batch, 48)
             embeddings.append(cat_emb)
-        
-        # Add brand preference embeddings
-        if self.num_brands > 0 and brand_prefs is not None:
-            brand_emb = self.brand_embedding(brand_prefs)  # (batch, 2, 16)
-            brand_emb = brand_emb.view(brand_emb.size(0), -1)  # (batch, 32)
+
+        # Add brand preference embeddings (use zeros if not provided)
+        if self.num_brands > 0:
+            if brand_prefs is not None:
+                brand_emb = self.brand_embedding(brand_prefs)  # (batch, 2, 16)
+                brand_emb = brand_emb.view(brand_emb.size(0), -1)  # (batch, 32)
+            else:
+                brand_emb = torch.zeros(batch_size, 16 * 2, device=device)  # (batch, 32)
             embeddings.append(brand_emb)
         
         # Concatenate all embeddings
