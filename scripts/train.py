@@ -112,11 +112,11 @@ def load_data(config: Config) -> tuple:
     processor = DataProcessor(config)
     
     # Load raw data
-    items_path = Path(config.data.raw_path) / "items.csv"
-    events_path = Path(config.data.raw_path) / "events.csv"
-    
+    items_path = Path(config.data.raw_items_path)
+    events_path = Path(config.data.raw_events_path)
+
     if not items_path.exists() or not events_path.exists():
-        logger.error(f"Data files not found in {config.data.raw_path}")
+        logger.error(f"Data files not found: {items_path}, {events_path}")
         logger.info("Expected files: items.csv, events.csv")
         raise FileNotFoundError("Missing data files")
     
@@ -151,8 +151,8 @@ def generate_embeddings(
     skip: bool = False,
 ) -> np.ndarray:
     """Generate or load visual embeddings."""
-    embeddings_path = Path(config.data.embeddings_path) / "visual_embeddings.npy"
-    cache_path = Path(config.data.embeddings_path) / "embedding_cache.pkl"
+    embeddings_path = Path(config.data.embeddings_dir) / "visual_embeddings.npy"
+    cache_path = Path(config.data.embeddings_dir) / "embedding_cache.pkl"
     
     if skip and embeddings_path.exists():
         logger.info(f"Loading cached embeddings from {embeddings_path}")
@@ -162,8 +162,8 @@ def generate_embeddings(
     logger.info("Generating visual embeddings...")
     
     embedder = FashionCLIPEmbedder(
-        model_name=config.embedding.model_name,
-        device=config.training.device,
+        model_name=config.embeddings.model_name,
+        device=config.embeddings.device,
     )
     
     # Get image URLs
@@ -190,7 +190,7 @@ def generate_embeddings(
     embeddings, successful_ids = embedder.embed_catalog(
         image_urls=valid_urls,
         item_ids=valid_items,
-        batch_size=config.embedding.batch_size,
+        batch_size=config.embeddings.batch_size,
     )
     
     if len(embeddings) == 0:
@@ -223,7 +223,7 @@ def create_datasets(
     interactions_df = interactions_df.sort_values('timestamp')
     
     n = len(interactions_df)
-    train_end = int(n * (1 - config.data.test_size - config.data.val_size))
+    train_end = int(n * (1 - config.data.test_size - config.data.validation_size))
     val_end = int(n * (1 - config.data.test_size))
     
     train_interactions = interactions_df.iloc[:train_end]
@@ -317,7 +317,7 @@ def train_model(
     )
     
     # Save final model
-    output_dir = Path(config.serving.model_path)
+    output_dir = Path(config.training.checkpoint_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     trainer.save_checkpoint(output_dir / "final_model.pt")
@@ -341,30 +341,30 @@ def build_index(
     """Build FAISS indices for serving."""
     logger.info("Building FAISS indices...")
     
-    output_dir = Path(config.serving.model_path)
-    
+    output_dir = Path(config.training.checkpoint_dir)
+
     # Build two-tower item embeddings index
     model.eval()
     with torch.no_grad():
         item_embeddings = model.generate_all_item_embeddings()
-    
+
     item_embeddings_np = item_embeddings.cpu().numpy()
     item_ids = list(range(len(item_embeddings_np)))
-    
+
     two_tower_retriever = FAISSRetriever(
-        dim=config.two_tower.embedding_dim,
-        index_type=config.serving.index_type,
+        dim=config.two_tower.final_embedding_dim,
+        index_type="IVFFlat",
         metric='cosine',
     )
     two_tower_retriever.build(item_embeddings_np, item_ids)
     two_tower_retriever.save(output_dir / "two_tower_index")
-    
+
     logger.info(f"Built two-tower index with {len(item_ids)} items")
-    
+
     # Build visual embeddings index
     visual_retriever = FAISSRetriever(
         dim=visual_embeddings.shape[1],
-        index_type=config.serving.index_type,
+        index_type="IVFFlat",
         metric='cosine',
     )
     visual_retriever.build(visual_embeddings, embedding_item_ids)
@@ -434,7 +434,7 @@ def evaluate_model(
             logger.info(f"{metric}: {value:.4f}")
     
     # Save results
-    output_dir = Path(config.serving.model_path)
+    output_dir = Path(config.training.checkpoint_dir)
     with open(output_dir / "evaluation_results.json", 'w') as f:
         json.dump(results, f, indent=2)
     
@@ -459,15 +459,16 @@ def main():
     
     # Apply command line overrides
     if args.data_path:
-        config.data.raw_path = args.data_path
+        config.data.raw_items_path = f"{args.data_path}/items.csv"
+        config.data.raw_events_path = f"{args.data_path}/events.csv"
     if args.output_dir:
-        config.serving.model_path = args.output_dir
+        config.training.checkpoint_dir = args.output_dir
     if args.epochs:
         config.training.epochs = args.epochs
     if args.batch_size:
         config.training.batch_size = args.batch_size
     if args.device:
-        config.training.device = args.device
+        config.embeddings.device = args.device
     
     logger.info(f"Config: {config}")
     
@@ -502,7 +503,7 @@ def main():
             )
         else:
             # Load existing model
-            model_path = Path(config.serving.model_path) / "model.pt"
+            model_path = Path(config.training.checkpoint_dir) / "model.pt"
             if not model_path.exists():
                 raise FileNotFoundError(f"Model not found at {model_path}")
             
