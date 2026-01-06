@@ -171,7 +171,7 @@ def generate_embeddings(
     
     # Get image URLs
     item_ids = items_df['item_id'].tolist()
-    image_urls = items_df['first_image_url'].tolist()
+    image_urls = items_df['primary_image'].tolist()
     
     # Filter items with valid URLs
     valid_items = []
