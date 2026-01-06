@@ -36,7 +36,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.utils.config import Config
 from src.utils.logger import setup_logger
 from src.data.processor import DataProcessor
-from src.data.dataset import InteractionDataset, collate_interactions
+from src.data.dataset import InteractionDataset, collate_with_negatives
 from src.data.features import FeatureEngineer
 from src.embeddings.fashion_clip import FashionCLIPEmbedder, EmbeddingCache
 from src.models.two_tower import TwoTowerModel
@@ -252,7 +252,7 @@ def create_datasets(
         train_dataset,
         batch_size=config.training.batch_size,
         shuffle=True,
-        collate_fn=collate_interactions,
+        collate_fn=collate_with_negatives,
         num_workers=4,
         pin_memory=True,
     )
@@ -261,7 +261,7 @@ def create_datasets(
         val_dataset,
         batch_size=config.training.batch_size,
         shuffle=False,
-        collate_fn=collate_interactions,
+        collate_fn=collate_with_negatives,
         num_workers=4,
         pin_memory=True,
     )
