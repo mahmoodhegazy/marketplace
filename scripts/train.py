@@ -108,10 +108,10 @@ def parse_args():
 def load_data(config: Config) -> tuple:
     """Load and preprocess data."""
     logger.info("Loading data...")
-    
+
     processor = DataProcessor(config)
-    
-    # Load raw data
+
+    # Load raw data (cleaning happens internally)
     items_path = Path(config.data.raw_items_path)
     events_path = Path(config.data.raw_events_path)
 
@@ -119,29 +119,32 @@ def load_data(config: Config) -> tuple:
         logger.error(f"Data files not found: {items_path}, {events_path}")
         logger.info("Expected files: items.csv, events.csv")
         raise FileNotFoundError("Missing data files")
-    
+
     items_df, events_df = processor.load_data(
         str(items_path),
         str(events_path),
     )
-    
+
     logger.info(f"Loaded {len(items_df)} items and {len(events_df)} events")
-    
-    # Clean data
-    items_df = processor.clean_items(items_df)
-    events_df = processor.clean_events(events_df)
-    
-    # Build interactions
-    interactions_df = processor.build_interactions(events_df)
+
+    # Build interactions (works on internal state)
+    interactions_df = processor.build_interactions()
     logger.info(f"Built {len(interactions_df)} interactions")
-    
-    # Encode features
-    items_df = processor.encode_features(items_df)
-    
-    # Get vocab sizes
-    vocab_sizes = processor.get_vocab_sizes(items_df, events_df)
+
+    # Encode features (works on internal state, returns encoded dfs)
+    items_df, interactions_df = processor.encode_features()
+
+    # Get vocab sizes from processor
+    vocab_sizes = {
+        'num_users': processor.vocab_sizes['user'],
+        'num_items': processor.vocab_sizes['item'],
+        'num_categories': processor.vocab_sizes['category'],
+        'num_brands': processor.vocab_sizes['brand'],
+        'num_conditions': processor.vocab_sizes['condition'],
+        'num_sizes': processor.vocab_sizes['size'],
+    }
     logger.info(f"Vocab sizes: {vocab_sizes}")
-    
+
     return items_df, events_df, interactions_df, processor, vocab_sizes
 
 
