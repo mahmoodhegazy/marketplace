@@ -293,7 +293,7 @@ def train_model(
     embedding_dim = visual_embeddings.shape[1] if len(visual_embeddings) > 0 else 512
     
     # Create full embedding matrix with zeros for items without embeddings
-    num_items = vocab_sizes['num_items']
+    num_items = vocab_sizes['item']
     full_embeddings = np.zeros((num_items, embedding_dim), dtype=np.float32)
     
     item_id_to_idx = {item_id: i for i, item_id in enumerate(embedding_item_ids)}
