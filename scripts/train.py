@@ -447,8 +447,7 @@ def main():
     
     # Setup logging
     setup_logger(
-        log_dir="logs",
-        log_name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        log_file=f"logs/train_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
     )
     
     logger.info("=" * 60)
