@@ -227,7 +227,7 @@ def create_datasets(
     logger.info("Creating datasets...")
     
     # Temporal split
-    interactions_df = interactions_df.sort_values('timestamp')
+    interactions_df = interactions_df.sort_values('last_interaction')
     
     n = len(interactions_df)
     train_end = int(n * (1 - config.data.test_size - config.data.validation_size))
