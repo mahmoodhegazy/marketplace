@@ -154,14 +154,26 @@ def generate_embeddings(
     skip: bool = False,
 ) -> np.ndarray:
     """Generate or load visual embeddings."""
-    embeddings_path = Path(config.data.embeddings_dir) / "visual_embeddings.npy"
-    cache_path = Path(config.data.embeddings_dir) / "embedding_cache.pkl"
-    
-    if skip and embeddings_path.exists():
+    embeddings_dir = Path(config.data.embeddings_dir)
+    embeddings_path = embeddings_dir / "visual_embeddings.npy"
+    # Also check for alternative naming from previous runs
+    alt_embeddings_path = embeddings_dir / "embeddings.npy"
+    alt_item_ids_path = embeddings_dir / "item_ids.npy"
+
+    # Auto-detect existing embeddings
+    if embeddings_path.exists():
         logger.info(f"Loading cached embeddings from {embeddings_path}")
         data = np.load(embeddings_path, allow_pickle=True).item()
         return data['embeddings'], data['item_ids']
-    
+    elif alt_embeddings_path.exists() and alt_item_ids_path.exists():
+        logger.info(f"Loading cached embeddings from {alt_embeddings_path}")
+        embeddings = np.load(alt_embeddings_path)
+        item_ids = np.load(alt_item_ids_path).tolist()
+        return embeddings, item_ids
+
+    if skip:
+        raise FileNotFoundError(f"No cached embeddings found in {embeddings_dir}")
+
     logger.info("Generating visual embeddings...")
 
     embedder = FashionCLIPEmbedder(
