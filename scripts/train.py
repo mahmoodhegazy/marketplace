@@ -163,55 +163,47 @@ def generate_embeddings(
         return data['embeddings'], data['item_ids']
     
     logger.info("Generating visual embeddings...")
-    
+
     embedder = FashionCLIPEmbedder(
         model_name=config.embeddings.model_name,
         device=config.embeddings.device,
     )
-    
-    # Get image URLs
-    item_ids = items_df['item_id'].tolist()
-    image_urls = items_df['primary_image'].tolist()
-    
-    # Filter items with valid URLs
-    valid_items = []
-    valid_urls = []
-    for item_id, url in zip(item_ids, image_urls):
-        if url and isinstance(url, str) and url.startswith('http'):
-            valid_items.append(item_id)
-            valid_urls.append(url)
-    
-    logger.info(f"Generating embeddings for {len(valid_urls)} items with valid URLs")
-    
-    # Load existing cache if available
-    cache = None
-    if cache_path.exists():
-        cache = EmbeddingCache.load(cache_path)
-        logger.info(f"Loaded embedding cache with {len(cache.embeddings)} items")
-    
+
+    # Filter to items with valid URLs
+    valid_items_df = items_df[
+        items_df['primary_image'].notna() &
+        items_df['primary_image'].str.startswith('http', na=False)
+    ].copy()
+
+    logger.info(f"Generating embeddings for {len(valid_items_df)} items with valid URLs")
+
     # Generate embeddings
-    embeddings, successful_ids = embedder.embed_catalog(
-        image_urls=valid_urls,
-        item_ids=valid_items,
+    embeddings, items_with_embeddings = embedder.embed_catalog(
+        items_df=valid_items_df,
+        image_column='primary_image',
         batch_size=config.embeddings.batch_size,
     )
-    
-    if len(embeddings) == 0:
+
+    # Get item IDs that have valid embeddings
+    successful_ids = items_with_embeddings[items_with_embeddings['has_embedding']]['item_id'].tolist()
+    valid_embeddings = embeddings[items_with_embeddings['has_embedding'].values]
+
+    if len(valid_embeddings) == 0:
         logger.error("No embeddings generated!")
         raise ValueError("Failed to generate any embeddings")
-    
-    logger.info(f"Generated {len(embeddings)} embeddings")
-    
+
+    logger.info(f"Generated {len(valid_embeddings)} valid embeddings")
+
     # Save embeddings
     embeddings_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(embeddings_path, {
-        'embeddings': embeddings,
+        'embeddings': valid_embeddings,
         'item_ids': successful_ids,
     })
-    
+
     logger.info(f"Saved embeddings to {embeddings_path}")
-    
-    return embeddings, successful_ids
+
+    return valid_embeddings, successful_ids
 
 
 def create_datasets(
