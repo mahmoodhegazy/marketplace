@@ -422,14 +422,16 @@ class TwoTowerModel(nn.Module):
             self.config = config
         
         self.vocab_sizes = vocab_sizes
-        
+
         # Store visual embeddings (for item tower)
-        self.visual_embeddings = None
         if visual_embeddings is not None:
             self.register_buffer(
                 'visual_embeddings',
-                torch.tensor(visual_embeddings, dtype=torch.float32),
+                visual_embeddings.clone().detach() if isinstance(visual_embeddings, torch.Tensor)
+                else torch.tensor(visual_embeddings, dtype=torch.float32),
             )
+        else:
+            self.register_buffer('visual_embeddings', None)
         
         # Build towers
         self.user_tower = UserTower(
