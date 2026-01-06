@@ -301,19 +301,19 @@ def train_model(
         if item_id < num_items:
             full_embeddings[item_id] = embedding
     
-    # Initialize model
+    # Initialize model (pass two_tower config, not main config)
     model = TwoTowerModel(
-        config=config,
+        config=config.two_tower,
         vocab_sizes=vocab_sizes,
         visual_embeddings=torch.tensor(full_embeddings),
     )
     
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Initialize trainer
+    # Initialize trainer (pass training config, not main config)
     trainer = Trainer(
         model=model,
-        config=config,
+        config=config.training,
         experiment_name=experiment_name,
     )
     
