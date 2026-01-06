@@ -181,56 +181,73 @@ class FashionCLIPEmbedder:
     @torch.no_grad()
     def embed_images(
         self,
-        images: List[Union[str, Image.Image]],
+        images: Optional[List[Union[str, Image.Image]]] = None,
         batch_size: int = 32,
         show_progress: bool = True,
-    ) -> np.ndarray:
+        max_workers: int = 8,
+        image_urls: Optional[List[str]] = None,
+        return_valid_indices: bool = True,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, List[int]]]:
         """
         Generate embeddings for multiple images.
-        
+
         Parameters
         ----------
-        images : list
+        images : list, optional
             List of image URLs or PIL Images.
         batch_size : int
             Batch size for processing.
         show_progress : bool
             Whether to show progress bar.
-        
+        max_workers : int
+            Maximum number of workers for parallel image downloading.
+        image_urls : list, optional
+            Alias for images parameter (for convenience).
+        return_valid_indices : bool
+            If True, return tuple of (embeddings, valid_indices).
+            If False, return only embeddings array with zeros for failed.
+
         Returns
         -------
-        np.ndarray
-            Array of shape (n_images, 512).
+        np.ndarray or Tuple[np.ndarray, List[int]]
+            If return_valid_indices is True: (embeddings, valid_indices)
+            Otherwise: Array of shape (n_images, 512).
         """
         self.load_model()
-        
-        embeddings = []
-        
+
+        # Support both 'images' and 'image_urls' parameter names
+        if images is None and image_urls is not None:
+            images = image_urls
+        elif images is None:
+            raise ValueError("Either 'images' or 'image_urls' must be provided")
+
+        all_embeddings = []
+        all_valid_indices = []
+
         # Process in batches
         iterator = range(0, len(images), batch_size)
         if show_progress:
             iterator = tqdm(iterator, desc="Generating embeddings")
-        
-        for i in iterator:
-            batch_images = images[i:i + batch_size]
-            
+
+        for batch_start in iterator:
+            batch_images = images[batch_start:batch_start + batch_size]
+
             # Download images if URLs
             if isinstance(batch_images[0], str):
-                batch_images = self._download_images_parallel(batch_images)
-            
+                batch_images = self._download_images_parallel(batch_images, max_workers=max_workers)
+
             # Filter out failed downloads
             valid_images = []
-            valid_indices = []
+            batch_valid_indices = []
             for j, img in enumerate(batch_images):
                 if img is not None:
                     valid_images.append(img)
-                    valid_indices.append(j)
-            
+                    batch_valid_indices.append(batch_start + j)
+
             if not valid_images:
-                # All downloads failed, return zeros
-                embeddings.extend([np.zeros(512) for _ in batch_images])
+                # All downloads failed in this batch
                 continue
-            
+
             # Process batch
             if hasattr(self, '_using_open_clip') and self._using_open_clip:
                 batch_tensors = torch.stack([
@@ -241,19 +258,27 @@ class FashionCLIPEmbedder:
                 inputs = self.processor(images=valid_images, return_tensors="pt", padding=True)
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 batch_embeddings = self.model.get_image_features(**inputs)
-            
+
             # Normalize
             batch_embeddings = batch_embeddings / batch_embeddings.norm(dim=-1, keepdim=True)
             batch_embeddings = batch_embeddings.cpu().numpy()
-            
-            # Reconstruct with zeros for failed downloads
-            full_batch = np.zeros((len(batch_images), 512))
-            for idx, emb_idx in enumerate(valid_indices):
-                full_batch[emb_idx] = batch_embeddings[idx]
-            
-            embeddings.extend(full_batch)
-        
-        return np.array(embeddings)
+
+            all_embeddings.extend(batch_embeddings)
+            all_valid_indices.extend(batch_valid_indices)
+
+        if len(all_embeddings) == 0:
+            embeddings_array = np.zeros((0, 512))
+        else:
+            embeddings_array = np.array(all_embeddings)
+
+        if return_valid_indices:
+            return embeddings_array, all_valid_indices
+        else:
+            # Return with zeros for failed (legacy behavior)
+            full_embeddings = np.zeros((len(images), 512))
+            for idx, valid_idx in enumerate(all_valid_indices):
+                full_embeddings[valid_idx] = embeddings_array[idx]
+            return full_embeddings
     
     @torch.no_grad()
     def embed_text(self, texts: Union[str, List[str]]) -> np.ndarray:
@@ -296,10 +321,11 @@ class FashionCLIPEmbedder:
         batch_size: int = 32,
         save_path: Optional[str] = None,
         show_progress: bool = True,
+        max_workers: int = 8,
     ) -> Tuple[np.ndarray, pd.DataFrame]:
         """
         Generate embeddings for entire item catalog.
-        
+
         Parameters
         ----------
         items_df : pd.DataFrame
@@ -312,41 +338,45 @@ class FashionCLIPEmbedder:
             Path to save embeddings.
         show_progress : bool
             Whether to show progress bar.
-        
+        max_workers : int
+            Maximum workers for parallel image downloading.
+
         Returns
         -------
         Tuple[np.ndarray, pd.DataFrame]
             Embeddings array and updated DataFrame with embedding indices.
         """
         logger.info(f"Generating embeddings for {len(items_df)} items")
-        
+
         # Get image URLs
         image_urls = items_df[image_column].tolist()
-        
-        # Generate embeddings
+
+        # Generate embeddings (use legacy mode without valid indices)
         embeddings = self.embed_images(
-            image_urls,
+            images=image_urls,
             batch_size=batch_size,
             show_progress=show_progress,
+            max_workers=max_workers,
+            return_valid_indices=False,
         )
-        
+
         # Track which items have valid embeddings
         valid_mask = ~np.all(embeddings == 0, axis=1)
         logger.info(f"Generated embeddings: {valid_mask.sum()} valid, "
                    f"{(~valid_mask).sum()} failed")
-        
+
         # Add embedding index to DataFrame
         items_df = items_df.copy()
         items_df['embedding_idx'] = range(len(items_df))
         items_df['has_embedding'] = valid_mask
-        
+
         # Save if path provided
         if save_path:
             save_path = Path(save_path)
             save_path.parent.mkdir(parents=True, exist_ok=True)
             np.save(save_path, embeddings)
             logger.info(f"Saved embeddings to {save_path}")
-        
+
         return embeddings, items_df
     
     def compute_similarity(
@@ -471,54 +501,133 @@ class FashionCLIPEmbedder:
 class EmbeddingCache:
     """
     Cache for storing and retrieving embeddings.
-    
+
     Supports incremental updates when new items are added.
+
+    Can be initialized either with a cache directory for file-based storage,
+    or directly with embeddings and item_ids for in-memory use.
     """
-    
-    def __init__(self, cache_dir: str = "data/embeddings"):
-        self.cache_dir = Path(cache_dir)
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        self.embeddings: Optional[np.ndarray] = None
+
+    def __init__(
+        self,
+        cache_dir: Optional[str] = None,
+        embeddings: Optional[np.ndarray] = None,
+        item_ids: Optional[List] = None,
+    ):
+        """
+        Initialize embedding cache.
+
+        Parameters
+        ----------
+        cache_dir : str, optional
+            Directory for file-based caching.
+        embeddings : np.ndarray, optional
+            Pre-computed embeddings array.
+        item_ids : list, optional
+            List of item IDs corresponding to embeddings.
+        """
+        self.cache_dir = Path(cache_dir) if cache_dir else None
+        if self.cache_dir:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        self.embeddings: Optional[np.ndarray] = embeddings
+        self.item_ids: List = list(item_ids) if item_ids is not None else []
         self.item_to_idx: Dict[int, int] = {}
         self.idx_to_item: Dict[int, int] = {}
-    
-    def load(self, name: str = "catalog") -> bool:
-        """Load cached embeddings."""
+
+        # Build index mappings if embeddings provided
+        if embeddings is not None and item_ids is not None:
+            for idx, item_id in enumerate(self.item_ids):
+                self.item_to_idx[item_id] = idx
+                self.idx_to_item[idx] = item_id
+
+    @classmethod
+    def load(cls, path: Union[str, Path]) -> "EmbeddingCache":
+        """
+        Load cached embeddings from a file path.
+
+        Parameters
+        ----------
+        path : str or Path
+            Path to the .npz cache file.
+
+        Returns
+        -------
+        EmbeddingCache
+            Loaded cache instance.
+        """
+        path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Cache file not found: {path}")
+
+        data = np.load(path, allow_pickle=True)
+        embeddings = data['embeddings']
+        item_ids = data['item_ids'].tolist()
+
+        cache = cls(embeddings=embeddings, item_ids=item_ids)
+        logger.info(f"Loaded {len(embeddings)} cached embeddings from {path}")
+        return cache
+
+    def save(self, path: Union[str, Path]):
+        """
+        Save embeddings to cache file.
+
+        Parameters
+        ----------
+        path : str or Path
+            Path to save the .npz cache file.
+        """
+        if self.embeddings is None:
+            return
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        np.savez(
+            path,
+            embeddings=self.embeddings,
+            item_ids=np.array(self.item_ids),
+        )
+        logger.info(f"Saved {len(self.embeddings)} embeddings to {path}")
+
+    def load_from_dir(self, name: str = "catalog") -> bool:
+        """Load cached embeddings from cache directory."""
+        if self.cache_dir is None:
+            return False
+
         emb_path = self.cache_dir / f"{name}_embeddings.npy"
         idx_path = self.cache_dir / f"{name}_index.npy"
-        
+
         if emb_path.exists() and idx_path.exists():
             self.embeddings = np.load(emb_path)
             item_ids = np.load(idx_path)
-            
+            self.item_ids = item_ids.tolist()
+
             self.item_to_idx = {int(item_id): idx for idx, item_id in enumerate(item_ids)}
             self.idx_to_item = {idx: int(item_id) for idx, item_id in enumerate(item_ids)}
-            
+
             logger.info(f"Loaded {len(self.embeddings)} cached embeddings")
             return True
-        
+
         return False
-    
-    def save(self, name: str = "catalog"):
-        """Save embeddings to cache."""
-        if self.embeddings is None:
+
+    def save_to_dir(self, name: str = "catalog"):
+        """Save embeddings to cache directory."""
+        if self.embeddings is None or self.cache_dir is None:
             return
-        
+
         np.save(self.cache_dir / f"{name}_embeddings.npy", self.embeddings)
-        
-        item_ids = np.array([self.idx_to_item[i] for i in range(len(self.embeddings))])
-        np.save(self.cache_dir / f"{name}_index.npy", item_ids)
-        
+        np.save(self.cache_dir / f"{name}_index.npy", np.array(self.item_ids))
+
         logger.info(f"Saved {len(self.embeddings)} embeddings to cache")
-    
+
     def get_embedding(self, item_id: int) -> Optional[np.ndarray]:
         """Get embedding for an item."""
         if self.embeddings is None or item_id not in self.item_to_idx:
             return None
-        
+
         return self.embeddings[self.item_to_idx[item_id]]
-    
+
     def add_embeddings(
         self,
         item_ids: List[int],
@@ -527,6 +636,7 @@ class EmbeddingCache:
         """Add new embeddings to cache."""
         if self.embeddings is None:
             self.embeddings = embeddings
+            self.item_ids = list(item_ids)
             for idx, item_id in enumerate(item_ids):
                 self.item_to_idx[item_id] = idx
                 self.idx_to_item[idx] = item_id
@@ -534,12 +644,13 @@ class EmbeddingCache:
             # Append new embeddings
             start_idx = len(self.embeddings)
             self.embeddings = np.vstack([self.embeddings, embeddings])
-            
+            self.item_ids.extend(item_ids)
+
             for i, item_id in enumerate(item_ids):
                 idx = start_idx + i
                 self.item_to_idx[item_id] = idx
                 self.idx_to_item[idx] = item_id
-    
+
     def get_missing_items(self, item_ids: List[int]) -> List[int]:
         """Get item IDs that don't have cached embeddings."""
         return [item_id for item_id in item_ids if item_id not in self.item_to_idx]
