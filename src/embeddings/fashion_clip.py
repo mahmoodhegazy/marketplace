@@ -91,34 +91,52 @@ class FashionCLIPEmbedder:
         
         try:
             # Try loading with transformers (standard HuggingFace approach)
-            from transformers import AutoProcessor, AutoModel, CLIPModel, CLIPProcessor
+            from transformers import (
+                AutoProcessor, AutoModel, CLIPModel, CLIPProcessor,
+                AutoModelForZeroShotImageClassification
+            )
 
-            # First try loading as a standard CLIP model
+            # First try loading as AutoModelForZeroShotImageClassification (as shown in model card)
             try:
-                logger.info(f"Trying to load as CLIPModel...")
-                self.model = CLIPModel.from_pretrained(
-                    self.model_name,
-                    cache_dir=self.cache_dir,
-                    torch_dtype=torch.float32,
-                ).to(self.device)
-                self.processor = CLIPProcessor.from_pretrained(
-                    self.model_name,
-                    cache_dir=self.cache_dir,
-                )
-                self._model_type = "clip"
-            except Exception as clip_e:
-                logger.info(f"CLIPModel failed ({clip_e}), trying AutoModel...")
-                # Try with AutoModel/AutoProcessor (as shown in model card)
+                logger.info(f"Trying to load as AutoModelForZeroShotImageClassification...")
                 self.processor = AutoProcessor.from_pretrained(
                     self.model_name,
                     cache_dir=self.cache_dir,
                 )
-                self.model = AutoModel.from_pretrained(
+                self.model = AutoModelForZeroShotImageClassification.from_pretrained(
                     self.model_name,
                     cache_dir=self.cache_dir,
                     torch_dtype=torch.float32,
                 ).to(self.device)
-                self._model_type = "auto"
+                self._model_type = "zero_shot_classification"
+                logger.info("Loaded as AutoModelForZeroShotImageClassification")
+            except Exception as zsc_e:
+                logger.info(f"AutoModelForZeroShotImageClassification failed ({zsc_e}), trying CLIPModel...")
+                # Try as standard CLIP model
+                try:
+                    self.model = CLIPModel.from_pretrained(
+                        self.model_name,
+                        cache_dir=self.cache_dir,
+                        torch_dtype=torch.float32,
+                    ).to(self.device)
+                    self.processor = CLIPProcessor.from_pretrained(
+                        self.model_name,
+                        cache_dir=self.cache_dir,
+                    )
+                    self._model_type = "clip"
+                except Exception as clip_e:
+                    logger.info(f"CLIPModel failed ({clip_e}), trying AutoModel...")
+                    # Try with AutoModel/AutoProcessor
+                    self.processor = AutoProcessor.from_pretrained(
+                        self.model_name,
+                        cache_dir=self.cache_dir,
+                    )
+                    self.model = AutoModel.from_pretrained(
+                        self.model_name,
+                        cache_dir=self.cache_dir,
+                        torch_dtype=torch.float32,
+                    ).to(self.device)
+                    self._model_type = "auto"
 
             self.model.eval()
             self._loaded = True
@@ -192,35 +210,41 @@ class FashionCLIPEmbedder:
             # open_clip uses encode_image with raw tensor
             return self.model.encode_image(inputs['pixel_values'])
 
+        # Handle AutoModelForZeroShotImageClassification - access underlying CLIP model
+        model_to_use = self.model
+        if hasattr(self.model, 'model') and hasattr(self.model.model, 'get_image_features'):
+            # AutoModelForZeroShotImageClassification wraps a CLIP model
+            model_to_use = self.model.model
+
         # Try different methods based on model type
-        if hasattr(self.model, 'get_image_features'):
+        if hasattr(model_to_use, 'get_image_features'):
             # Standard CLIP model
-            return self.model.get_image_features(**inputs)
-        elif hasattr(self.model, 'vision_model'):
+            return model_to_use.get_image_features(**inputs)
+        elif hasattr(model_to_use, 'vision_model'):
             # Model with separate vision encoder (like some AutoModels)
-            vision_outputs = self.model.vision_model(pixel_values=inputs['pixel_values'])
+            vision_outputs = model_to_use.vision_model(pixel_values=inputs['pixel_values'])
             # Get the pooled output or last hidden state
             if hasattr(vision_outputs, 'pooler_output') and vision_outputs.pooler_output is not None:
                 image_features = vision_outputs.pooler_output
             else:
                 image_features = vision_outputs.last_hidden_state[:, 0, :]  # CLS token
             # Project if projection layer exists
-            if hasattr(self.model, 'visual_projection'):
-                image_features = self.model.visual_projection(image_features)
+            if hasattr(model_to_use, 'visual_projection'):
+                image_features = model_to_use.visual_projection(image_features)
             return image_features
-        elif hasattr(self.model, 'encode_image'):
+        elif hasattr(model_to_use, 'encode_image'):
             # open_clip style
-            return self.model.encode_image(inputs['pixel_values'])
+            return model_to_use.encode_image(inputs['pixel_values'])
         else:
             # Last resort: try forward pass and extract image features
-            outputs = self.model(**inputs)
+            outputs = model_to_use(**inputs)
             if hasattr(outputs, 'image_embeds'):
                 return outputs.image_embeds
             elif hasattr(outputs, 'logits_per_image'):
                 # This is classification output, not what we want
                 raise ValueError("Model returns classification logits, not embeddings")
             else:
-                raise ValueError(f"Cannot extract image features from model type: {type(self.model)}")
+                raise ValueError(f"Cannot extract image features from model type: {type(model_to_use)}")
 
     def _try_fallback_model(self) -> bool:
         """Try loading a fallback model if primary model produces NaN."""
