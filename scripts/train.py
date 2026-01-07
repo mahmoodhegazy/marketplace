@@ -398,11 +398,11 @@ def build_index(
     item_embeddings_np = item_embeddings
     item_ids = list(range(len(item_embeddings_np)))
 
-    # Use 'flat' index for reliability (no training required, works with any data)
-    # For large catalogs (>100K items), consider 'ivf' or 'hnsw' after ensuring clean embeddings
+    # Use 'ivf' index for faster search with large catalogs
+    # IVF requires training but provides much faster queries
     two_tower_retriever = FAISSRetriever(
         dim=config.two_tower.final_embedding_dim,
-        index_type="flat",
+        index_type="ivf",
         metric='cosine',
     )
     two_tower_retriever.build(item_embeddings_np, item_ids)
@@ -413,7 +413,7 @@ def build_index(
     # Build visual embeddings index
     visual_retriever = FAISSRetriever(
         dim=visual_embeddings.shape[1],
-        index_type="flat",
+        index_type="ivf",
         metric='cosine',
     )
     visual_retriever.build(visual_embeddings, embedding_item_ids)
