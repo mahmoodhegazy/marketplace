@@ -259,9 +259,20 @@ class FashionCLIPEmbedder:
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 batch_embeddings = self.model.get_image_features(**inputs)
 
-            # Normalize
-            batch_embeddings = batch_embeddings / batch_embeddings.norm(dim=-1, keepdim=True)
+            # Normalize (safe division to avoid NaN from zero vectors)
+            norms = batch_embeddings.norm(dim=-1, keepdim=True)
+            norms = torch.clamp(norms, min=1e-8)  # Prevent division by zero
+            batch_embeddings = batch_embeddings / norms
             batch_embeddings = batch_embeddings.cpu().numpy()
+
+            # Validate embeddings - check for NaN/Inf
+            nan_mask = np.isnan(batch_embeddings).any(axis=1)
+            inf_mask = np.isinf(batch_embeddings).any(axis=1)
+            invalid_mask = nan_mask | inf_mask
+            if invalid_mask.any():
+                num_invalid = invalid_mask.sum()
+                logger.warning(f"Batch {batch_start}: {num_invalid}/{len(batch_embeddings)} embeddings contain NaN/Inf, replacing with zeros")
+                batch_embeddings[invalid_mask] = 0.0
 
             all_embeddings.extend(batch_embeddings)
             all_valid_indices.extend(batch_valid_indices)
@@ -362,8 +373,14 @@ class FashionCLIPEmbedder:
 
         # Track which items have valid embeddings
         valid_mask = ~np.all(embeddings == 0, axis=1)
+
+        # Check for any remaining NaN (should be handled, but verify)
+        nan_count = np.isnan(embeddings).sum()
+        if nan_count > 0:
+            logger.error(f"CRITICAL: Final embeddings contain {nan_count} NaN values!")
+
         logger.info(f"Generated embeddings: {valid_mask.sum()} valid, "
-                   f"{(~valid_mask).sum()} failed")
+                   f"{(~valid_mask).sum()} failed (zeros)")
 
         # Add embedding index to DataFrame
         items_df = items_df.copy()
