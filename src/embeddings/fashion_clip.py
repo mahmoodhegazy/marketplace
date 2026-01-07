@@ -43,15 +43,22 @@ class FashionCLIPEmbedder:
         embedder.embed_catalog(items_df, save_path="embeddings.npy")
     """
     
+    # Alternative models to try if primary fails
+    FALLBACK_MODELS = [
+        "openai/clip-vit-base-patch32",  # Standard CLIP
+        "openai/clip-vit-large-patch14",  # Larger CLIP
+    ]
+
     def __init__(
         self,
         model_name: str = "patrickjohncyh/fashion-clip",
         device: Optional[str] = None,
         cache_dir: Optional[str] = None,
+        use_fallback: bool = True,
     ):
         """
         Initialize FashionCLIP embedder.
-        
+
         Parameters
         ----------
         model_name : str
@@ -60,15 +67,19 @@ class FashionCLIPEmbedder:
             Device to use ('cuda' or 'cpu'). Auto-detects if not provided.
         cache_dir : str, optional
             Directory for caching downloaded models.
+        use_fallback : bool
+            If True, try fallback models if primary produces NaN.
         """
         self.model_name = model_name
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.cache_dir = cache_dir
-        
+        self.use_fallback = use_fallback
+
         self.model = None
         self.processor = None
         self._loaded = False
-        
+        self._nan_count = 0  # Track NaN occurrences
+
         logger.info(f"FashionCLIPEmbedder initialized (device: {self.device})")
     
     def load_model(self):
@@ -85,16 +96,24 @@ class FashionCLIPEmbedder:
             self.model = CLIPModel.from_pretrained(
                 self.model_name,
                 cache_dir=self.cache_dir,
+                torch_dtype=torch.float32,  # Ensure float32 to avoid precision issues
             ).to(self.device)
-            
+
             self.processor = CLIPProcessor.from_pretrained(
                 self.model_name,
                 cache_dir=self.cache_dir,
             )
-            
+
             self.model.eval()
             self._loaded = True
-            logger.info("FashionCLIP model loaded successfully")
+
+            # Validate model weights don't contain NaN
+            for name, param in self.model.named_parameters():
+                if torch.isnan(param).any():
+                    logger.error(f"Model parameter '{name}' contains NaN values!")
+                    raise ValueError(f"Corrupted model weights: {name} contains NaN")
+
+            logger.info("FashionCLIP model loaded successfully (weights validated)")
             
         except Exception as e:
             logger.warning(f"Failed to load HuggingFace model: {e}")
@@ -118,6 +137,34 @@ class FashionCLIPEmbedder:
                 logger.error(f"Failed to load model: {e2}")
                 raise RuntimeError(f"Could not load FashionCLIP model: {e}, {e2}")
     
+    def _try_fallback_model(self) -> bool:
+        """Try loading a fallback model if primary model produces NaN."""
+        from transformers import CLIPModel, CLIPProcessor
+
+        for fallback_name in self.FALLBACK_MODELS:
+            if fallback_name == self.model_name:
+                continue  # Skip if same as current
+            try:
+                logger.info(f"Trying fallback model: {fallback_name}")
+                self.model = CLIPModel.from_pretrained(
+                    fallback_name,
+                    cache_dir=self.cache_dir,
+                    torch_dtype=torch.float32,
+                ).to(self.device)
+                self.processor = CLIPProcessor.from_pretrained(
+                    fallback_name,
+                    cache_dir=self.cache_dir,
+                )
+                self.model.eval()
+                self.model_name = fallback_name
+                self._using_open_clip = False
+                logger.info(f"Successfully loaded fallback model: {fallback_name}")
+                return True
+            except Exception as e:
+                logger.warning(f"Failed to load fallback {fallback_name}: {e}")
+                continue
+        return False
+
     def _download_image(self, url: str, timeout: float = 10.0) -> Optional[Image.Image]:
         """Download image from URL."""
         try:
@@ -256,8 +303,43 @@ class FashionCLIPEmbedder:
                 batch_embeddings = self.model.encode_image(batch_tensors)
             else:
                 inputs = self.processor(images=valid_images, return_tensors="pt", padding=True)
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                inputs = {k: v.to(self.device).float() for k, v in inputs.items()}  # Ensure float32
+
+                # Debug: Check input tensor
+                for k, v in inputs.items():
+                    if torch.isnan(v).any():
+                        logger.error(f"Input tensor '{k}' contains NaN before model forward!")
+
                 batch_embeddings = self.model.get_image_features(**inputs)
+
+            # Debug: Check for NaN before normalization
+            if torch.isnan(batch_embeddings).any() or torch.isinf(batch_embeddings).any():
+                nan_count = torch.isnan(batch_embeddings).sum().item()
+                inf_count = torch.isinf(batch_embeddings).sum().item()
+                self._nan_count += 1
+                logger.warning(f"Batch {batch_start}: Model output contains {nan_count} NaN, {inf_count} Inf BEFORE normalization")
+
+                # If first 3 batches all have NaN, try fallback model
+                if self._nan_count >= 3 and self.use_fallback and batch_start < 100:
+                    logger.error(f"Model '{self.model_name}' consistently producing NaN. Trying fallback model...")
+                    if self._try_fallback_model():
+                        # Re-process this batch with new model
+                        if hasattr(self, '_using_open_clip') and self._using_open_clip:
+                            batch_tensors = torch.stack([
+                                self.processor(img) for img in valid_images
+                            ]).to(self.device)
+                            batch_embeddings = self.model.encode_image(batch_tensors)
+                        else:
+                            inputs = self.processor(images=valid_images, return_tensors="pt", padding=True)
+                            inputs = {k: v.to(self.device).float() for k, v in inputs.items()}
+                            batch_embeddings = self.model.get_image_features(**inputs)
+                        self._nan_count = 0  # Reset counter for new model
+                    else:
+                        # Replace NaN/Inf with zeros before normalization
+                        batch_embeddings = torch.nan_to_num(batch_embeddings, nan=0.0, posinf=0.0, neginf=0.0)
+                else:
+                    # Replace NaN/Inf with zeros before normalization
+                    batch_embeddings = torch.nan_to_num(batch_embeddings, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Normalize (safe division to avoid NaN from zero vectors)
             norms = batch_embeddings.norm(dim=-1, keepdim=True)
@@ -271,7 +353,7 @@ class FashionCLIPEmbedder:
             invalid_mask = nan_mask | inf_mask
             if invalid_mask.any():
                 num_invalid = invalid_mask.sum()
-                logger.warning(f"Batch {batch_start}: {num_invalid}/{len(batch_embeddings)} embeddings contain NaN/Inf, replacing with zeros")
+                logger.warning(f"Batch {batch_start}: {num_invalid}/{len(batch_embeddings)} embeddings contain NaN/Inf AFTER normalization, replacing with zeros")
                 batch_embeddings[invalid_mask] = 0.0
 
             all_embeddings.extend(batch_embeddings)
