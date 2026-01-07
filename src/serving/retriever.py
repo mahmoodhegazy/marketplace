@@ -7,11 +7,15 @@ using FAISS for recommendation retrieval.
 """
 
 import numpy as np
+import platform
 from typing import List, Tuple, Dict, Optional, Union
 from pathlib import Path
 import json
 import faiss
 from loguru import logger
+
+# FAISS IVF has known segfault issues on macOS
+IS_MACOS = platform.system() == 'Darwin'
 
 
 class FAISSRetriever:
@@ -165,6 +169,12 @@ class FAISSRetriever:
         # Minimum items check for IVF
         min_items_for_ivf = 256
         use_ivf = self.index_type == 'ivf' and n_items >= min_items_for_ivf
+
+        # FAISS IVF has known segfault issues on macOS - use flat index instead
+        if use_ivf and IS_MACOS:
+            logger.warning("Skipping IVF on macOS due to known segfault issues, using flat index")
+            use_ivf = False
+
         actual_index_type = 'ivf' if use_ivf else 'flat' if self.index_type == 'ivf' else self.index_type
 
         if actual_index_type != self.index_type:
