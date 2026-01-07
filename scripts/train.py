@@ -507,7 +507,7 @@ def evaluate_model(
             recs = model.recommend(
                 user_idx=user_idx_tensor,
                 item_embeddings=item_embeddings,
-                k=100,
+                top_k=100,
             )
         
         recommendations[user_idx] = recs[0].tolist()
