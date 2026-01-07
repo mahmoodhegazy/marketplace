@@ -91,18 +91,34 @@ class FashionCLIPEmbedder:
         
         try:
             # Try loading with transformers (standard HuggingFace approach)
-            from transformers import CLIPModel, CLIPProcessor
-            
-            self.model = CLIPModel.from_pretrained(
-                self.model_name,
-                cache_dir=self.cache_dir,
-                torch_dtype=torch.float32,  # Ensure float32 to avoid precision issues
-            ).to(self.device)
+            from transformers import AutoProcessor, AutoModel, CLIPModel, CLIPProcessor
 
-            self.processor = CLIPProcessor.from_pretrained(
-                self.model_name,
-                cache_dir=self.cache_dir,
-            )
+            # First try loading as a standard CLIP model
+            try:
+                logger.info(f"Trying to load as CLIPModel...")
+                self.model = CLIPModel.from_pretrained(
+                    self.model_name,
+                    cache_dir=self.cache_dir,
+                    torch_dtype=torch.float32,
+                ).to(self.device)
+                self.processor = CLIPProcessor.from_pretrained(
+                    self.model_name,
+                    cache_dir=self.cache_dir,
+                )
+                self._model_type = "clip"
+            except Exception as clip_e:
+                logger.info(f"CLIPModel failed ({clip_e}), trying AutoModel...")
+                # Try with AutoModel/AutoProcessor (as shown in model card)
+                self.processor = AutoProcessor.from_pretrained(
+                    self.model_name,
+                    cache_dir=self.cache_dir,
+                )
+                self.model = AutoModel.from_pretrained(
+                    self.model_name,
+                    cache_dir=self.cache_dir,
+                    torch_dtype=torch.float32,
+                ).to(self.device)
+                self._model_type = "auto"
 
             self.model.eval()
             self._loaded = True
@@ -119,11 +135,11 @@ class FashionCLIPEmbedder:
                 test_inputs = self.processor(images=test_img, return_tensors="pt")
                 test_inputs = {k: v.to(self.device).float() for k, v in test_inputs.items()}
                 with torch.no_grad():
-                    test_output = self.model.get_image_features(**test_inputs)
+                    test_output = self._get_image_features(test_inputs)
                 if torch.isnan(test_output).any():
                     logger.error(f"Model produces NaN on test image! Trying fallback...")
                     raise ValueError("Model produces NaN on simple test")
-                logger.info("FashionCLIP model loaded and validated successfully")
+                logger.info(f"FashionCLIP model loaded and validated successfully (type: {self._model_type})")
             except Exception as test_e:
                 logger.warning(f"Model test failed: {test_e}, trying fallback...")
                 raise ValueError(f"Model validation failed: {test_e}")
@@ -141,7 +157,7 @@ class FashionCLIPEmbedder:
                         test_inputs = self.processor(images=test_img, return_tensors="pt")
                         test_inputs = {k: v.to(self.device).float() for k, v in test_inputs.items()}
                         with torch.no_grad():
-                            test_output = self.model.get_image_features(**test_inputs)
+                            test_output = self._get_image_features(test_inputs)
                         if torch.isnan(test_output).any():
                             raise ValueError("Fallback model also produces NaN")
                         self._loaded = True
@@ -170,6 +186,42 @@ class FashionCLIPEmbedder:
                 logger.error(f"All model loading attempts failed: {e2}")
                 raise RuntimeError(f"Could not load any CLIP model. Primary: {e}, open_clip: {e2}")
     
+    def _get_image_features(self, inputs: dict) -> torch.Tensor:
+        """Get image features from model, handling different model types."""
+        if hasattr(self, '_using_open_clip') and self._using_open_clip:
+            # open_clip uses encode_image with raw tensor
+            return self.model.encode_image(inputs['pixel_values'])
+
+        # Try different methods based on model type
+        if hasattr(self.model, 'get_image_features'):
+            # Standard CLIP model
+            return self.model.get_image_features(**inputs)
+        elif hasattr(self.model, 'vision_model'):
+            # Model with separate vision encoder (like some AutoModels)
+            vision_outputs = self.model.vision_model(pixel_values=inputs['pixel_values'])
+            # Get the pooled output or last hidden state
+            if hasattr(vision_outputs, 'pooler_output') and vision_outputs.pooler_output is not None:
+                image_features = vision_outputs.pooler_output
+            else:
+                image_features = vision_outputs.last_hidden_state[:, 0, :]  # CLS token
+            # Project if projection layer exists
+            if hasattr(self.model, 'visual_projection'):
+                image_features = self.model.visual_projection(image_features)
+            return image_features
+        elif hasattr(self.model, 'encode_image'):
+            # open_clip style
+            return self.model.encode_image(inputs['pixel_values'])
+        else:
+            # Last resort: try forward pass and extract image features
+            outputs = self.model(**inputs)
+            if hasattr(outputs, 'image_embeds'):
+                return outputs.image_embeds
+            elif hasattr(outputs, 'logits_per_image'):
+                # This is classification output, not what we want
+                raise ValueError("Model returns classification logits, not embeddings")
+            else:
+                raise ValueError(f"Cannot extract image features from model type: {type(self.model)}")
+
     def _try_fallback_model(self) -> bool:
         """Try loading a fallback model if primary model produces NaN."""
         from transformers import CLIPModel, CLIPProcessor
@@ -190,6 +242,7 @@ class FashionCLIPEmbedder:
                 )
                 self.model.eval()
                 self.model_name = fallback_name
+                self._model_type = "clip"
                 self._using_open_clip = False
                 logger.info(f"Successfully loaded fallback model: {fallback_name}")
                 return True
@@ -343,7 +396,7 @@ class FashionCLIPEmbedder:
                     if torch.isnan(v).any():
                         logger.error(f"Input tensor '{k}' contains NaN before model forward!")
 
-                batch_embeddings = self.model.get_image_features(**inputs)
+                batch_embeddings = self._get_image_features(inputs)
 
             # Debug: Check for NaN before normalization
             if torch.isnan(batch_embeddings).any() or torch.isinf(batch_embeddings).any():
@@ -365,7 +418,7 @@ class FashionCLIPEmbedder:
                         else:
                             inputs = self.processor(images=valid_images, return_tensors="pt", padding=True)
                             inputs = {k: v.to(self.device).float() for k, v in inputs.items()}
-                            batch_embeddings = self.model.get_image_features(**inputs)
+                            batch_embeddings = self._get_image_features(inputs)
                         self._nan_count = 0  # Reset counter for new model
                     else:
                         # Replace NaN/Inf with zeros before normalization
