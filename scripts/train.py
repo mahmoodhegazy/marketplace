@@ -172,9 +172,13 @@ def generate_embeddings(
         item_ids = [int(str(x).replace(',', '')) for x in np.load(alt_item_ids_path).tolist()]
         # Check for NaN in loaded embeddings
         nan_count = np.isnan(embeddings).sum()
+        total_elements = embeddings.size
         if nan_count > 0:
-            logger.warning(f"Loaded embeddings contain {nan_count} NaN values, replacing with zeros")
+            nan_pct = (nan_count / total_elements) * 100
+            logger.warning(f"Loaded embeddings contain {nan_count} NaN values ({nan_pct:.1f}%), replacing with zeros")
             embeddings = np.nan_to_num(embeddings, nan=0.0)
+            if nan_pct > 50:
+                logger.error(f"CRITICAL: {nan_pct:.1f}% of embeddings are NaN! Consider regenerating with: rm -rf data/embeddings/")
         logger.info(f"Loaded {len(item_ids)} embeddings, shape: {embeddings.shape}")
         return embeddings, item_ids
 
@@ -394,9 +398,11 @@ def build_index(
     item_embeddings_np = item_embeddings
     item_ids = list(range(len(item_embeddings_np)))
 
+    # Use 'flat' index for reliability (no training required, works with any data)
+    # For large catalogs (>100K items), consider 'ivf' or 'hnsw' after ensuring clean embeddings
     two_tower_retriever = FAISSRetriever(
         dim=config.two_tower.final_embedding_dim,
-        index_type="ivf",
+        index_type="flat",
         metric='cosine',
     )
     two_tower_retriever.build(item_embeddings_np, item_ids)
@@ -407,7 +413,7 @@ def build_index(
     # Build visual embeddings index
     visual_retriever = FAISSRetriever(
         dim=visual_embeddings.shape[1],
-        index_type="ivf",
+        index_type="flat",
         metric='cosine',
     )
     visual_retriever.build(visual_embeddings, embedding_item_ids)
