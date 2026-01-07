@@ -113,29 +113,62 @@ class FashionCLIPEmbedder:
                     logger.error(f"Model parameter '{name}' contains NaN values!")
                     raise ValueError(f"Corrupted model weights: {name} contains NaN")
 
-            logger.info("FashionCLIP model loaded successfully (weights validated)")
+            # Test model with a simple image to verify it works
+            try:
+                test_img = Image.new('RGB', (224, 224), color='red')
+                test_inputs = self.processor(images=test_img, return_tensors="pt")
+                test_inputs = {k: v.to(self.device).float() for k, v in test_inputs.items()}
+                with torch.no_grad():
+                    test_output = self.model.get_image_features(**test_inputs)
+                if torch.isnan(test_output).any():
+                    logger.error(f"Model produces NaN on test image! Trying fallback...")
+                    raise ValueError("Model produces NaN on simple test")
+                logger.info("FashionCLIP model loaded and validated successfully")
+            except Exception as test_e:
+                logger.warning(f"Model test failed: {test_e}, trying fallback...")
+                raise ValueError(f"Model validation failed: {test_e}")
             
         except Exception as e:
-            logger.warning(f"Failed to load HuggingFace model: {e}")
+            logger.warning(f"Failed to load primary model '{self.model_name}': {e}")
+
+            # Try fallback models
+            if self.use_fallback:
+                logger.info("Trying fallback CLIP models...")
+                if self._try_fallback_model():
+                    # Test the fallback model too
+                    try:
+                        test_img = Image.new('RGB', (224, 224), color='red')
+                        test_inputs = self.processor(images=test_img, return_tensors="pt")
+                        test_inputs = {k: v.to(self.device).float() for k, v in test_inputs.items()}
+                        with torch.no_grad():
+                            test_output = self.model.get_image_features(**test_inputs)
+                        if torch.isnan(test_output).any():
+                            raise ValueError("Fallback model also produces NaN")
+                        self._loaded = True
+                        logger.info(f"Fallback model '{self.model_name}' validated successfully")
+                        return
+                    except Exception as test_e:
+                        logger.error(f"Fallback model test failed: {test_e}")
+
+            # Last resort: try open_clip
             logger.info("Attempting to load with open_clip...")
-            
             try:
                 import open_clip
-                
-                # Use Marqo's FashionCLIP (ViT-B-16)
+
+                # Use standard CLIP from open_clip
                 self.model, _, self.processor = open_clip.create_model_and_transforms(
-                    'ViT-B-16',
-                    pretrained='laion2b_s34b_b88k',  # Fallback to standard CLIP
+                    'ViT-B-32',
+                    pretrained='openai',
                 )
                 self.model = self.model.to(self.device)
                 self.model.eval()
                 self._loaded = True
                 self._using_open_clip = True
-                logger.info("Loaded with open_clip")
-                
+                logger.info("Loaded with open_clip (ViT-B-32)")
+
             except Exception as e2:
-                logger.error(f"Failed to load model: {e2}")
-                raise RuntimeError(f"Could not load FashionCLIP model: {e}, {e2}")
+                logger.error(f"All model loading attempts failed: {e2}")
+                raise RuntimeError(f"Could not load any CLIP model. Primary: {e}, open_clip: {e2}")
     
     def _try_fallback_model(self) -> bool:
         """Try loading a fallback model if primary model produces NaN."""
