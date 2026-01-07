@@ -489,7 +489,7 @@ def evaluate_model(
     
     # Generate all item embeddings
     with torch.no_grad():
-        item_embeddings = model.generate_all_item_embeddings()
+        item_embeddings = model.generate_all_item_embeddings(items_df)
     
     # Group test interactions by user
     user_ground_truth = test_interactions.groupby('user_idx')['item_idx'].apply(set).to_dict()
