@@ -378,6 +378,37 @@ def train_model(
     return model
 
 
+def _validate_embeddings(embeddings: np.ndarray, name: str) -> np.ndarray:
+    """Validate and clean embeddings before FAISS indexing."""
+    embeddings = np.ascontiguousarray(embeddings.astype(np.float32))
+
+    # Check shape
+    logger.info(f"{name} shape: {embeddings.shape}")
+
+    # Check for NaN
+    nan_count = np.isnan(embeddings).sum()
+    if nan_count > 0:
+        logger.warning(f"{name}: Found {nan_count} NaN values, replacing with zeros")
+        embeddings = np.nan_to_num(embeddings, nan=0.0)
+
+    # Check for Inf
+    inf_count = np.isinf(embeddings).sum()
+    if inf_count > 0:
+        logger.warning(f"{name}: Found {inf_count} Inf values, clipping")
+        embeddings = np.clip(embeddings, -1e10, 1e10)
+
+    # Check stats
+    logger.info(f"{name} stats: min={embeddings.min():.4f}, max={embeddings.max():.4f}, mean={embeddings.mean():.4f}")
+
+    # Check for zero vectors
+    norms = np.linalg.norm(embeddings, axis=1)
+    zero_count = (norms < 1e-8).sum()
+    if zero_count > 0:
+        logger.warning(f"{name}: {zero_count} near-zero vectors")
+
+    return embeddings
+
+
 def build_index(
     model: TwoTowerModel,
     items_df: pd.DataFrame,
@@ -387,7 +418,7 @@ def build_index(
 ) -> None:
     """Build FAISS indices for serving."""
     logger.info("Building FAISS indices...")
-    
+
     output_dir = Path(config.training.checkpoint_dir)
 
     # Build two-tower item embeddings index
@@ -398,11 +429,19 @@ def build_index(
     item_embeddings_np = item_embeddings
     item_ids = list(range(len(item_embeddings_np)))
 
-    # Use 'ivf' index for faster search with large catalogs
-    # IVF requires training but provides much faster queries
+    # Validate embeddings before FAISS
+    item_embeddings_np = _validate_embeddings(item_embeddings_np, "Two-tower embeddings")
+
+    # Determine index type based on dataset size
+    # IVF needs enough data to train clusters, minimum ~256 items recommended
+    n_items = len(item_ids)
+    index_type = "ivf" if n_items >= 256 else "flat"
+    if index_type == "flat" and n_items < 256:
+        logger.info(f"Using flat index (only {n_items} items, need 256+ for IVF)")
+
     two_tower_retriever = FAISSRetriever(
         dim=config.two_tower.final_embedding_dim,
-        index_type="ivf",
+        index_type=index_type,
         metric='cosine',
     )
     two_tower_retriever.build(item_embeddings_np, item_ids)
@@ -410,10 +449,18 @@ def build_index(
 
     logger.info(f"Built two-tower index with {len(item_ids)} items")
 
+    # Validate visual embeddings
+    visual_embeddings = _validate_embeddings(visual_embeddings, "Visual embeddings")
+
     # Build visual embeddings index
+    n_visual = len(embedding_item_ids)
+    visual_index_type = "ivf" if n_visual >= 256 else "flat"
+    if visual_index_type == "flat" and n_visual < 256:
+        logger.info(f"Using flat index for visual (only {n_visual} items)")
+
     visual_retriever = FAISSRetriever(
         dim=visual_embeddings.shape[1],
-        index_type="ivf",
+        index_type=visual_index_type,
         metric='cosine',
     )
     visual_retriever.build(visual_embeddings, embedding_item_ids)

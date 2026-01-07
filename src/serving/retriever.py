@@ -112,7 +112,7 @@ class FAISSRetriever:
     ) -> None:
         """
         Build the index from embeddings.
-        
+
         Parameters
         ----------
         embeddings : np.ndarray
@@ -122,34 +122,85 @@ class FAISSRetriever:
         """
         if len(embeddings) != len(item_ids):
             raise ValueError("Number of embeddings must match number of item IDs")
-        
+
         n_items = len(item_ids)
         logger.info(f"Building FAISS index with {n_items} items, dim={self.dim}")
-        
-        # Normalize for cosine similarity
+
+        # Convert to float32 and ensure C-contiguous (required by FAISS)
+        embeddings = np.ascontiguousarray(embeddings.astype(np.float32))
+
+        # Check for and handle NaN/Inf values
+        nan_mask = np.isnan(embeddings).any(axis=1)
+        inf_mask = np.isinf(embeddings).any(axis=1)
+        invalid_mask = nan_mask | inf_mask
+
+        if invalid_mask.any():
+            invalid_count = invalid_mask.sum()
+            logger.warning(f"Found {invalid_count} embeddings with NaN/Inf, filtering them out")
+            valid_indices = ~invalid_mask
+            embeddings = embeddings[valid_indices]
+            item_ids = [item_ids[i] for i in range(len(item_ids)) if valid_indices[i]]
+            n_items = len(item_ids)
+            logger.info(f"Remaining valid embeddings: {n_items}")
+
+        if n_items == 0:
+            raise ValueError("No valid embeddings to build index")
+
+        # Normalize for cosine similarity (with safe division)
         if self.metric == 'cosine':
-            embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
-        
-        # Convert to float32
-        embeddings = embeddings.astype(np.float32)
-        
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            norms = np.clip(norms, 1e-8, None)  # Prevent division by zero
+            embeddings = embeddings / norms
+
+        # Check for zero vectors after normalization
+        zero_mask = np.all(embeddings == 0, axis=1)
+        if zero_mask.any():
+            zero_count = zero_mask.sum()
+            logger.warning(f"Found {zero_count} zero vectors after normalization, filtering them out")
+            valid_indices = ~zero_mask
+            embeddings = embeddings[valid_indices]
+            item_ids = [item_ids[i] for i in range(len(item_ids)) if valid_indices[i]]
+            n_items = len(item_ids)
+
+        # Minimum items check for IVF
+        min_items_for_ivf = 256
+        use_ivf = self.index_type == 'ivf' and n_items >= min_items_for_ivf
+        actual_index_type = 'ivf' if use_ivf else 'flat' if self.index_type == 'ivf' else self.index_type
+
+        if actual_index_type != self.index_type:
+            logger.warning(f"Falling back from {self.index_type} to {actual_index_type} (need at least {min_items_for_ivf} items for IVF, have {n_items})")
+
+        # Temporarily set index type for _create_index
+        original_index_type = self.index_type
+        self.index_type = actual_index_type
+
         # Create index
         self.index = self._create_index(n_items)
-        
+
+        # Restore original index type
+        self.index_type = original_index_type
+
         # Train if needed (IVF requires training)
-        if self.index_type == 'ivf' and not self.index.is_trained:
+        if actual_index_type == 'ivf' and not self.index.is_trained:
             logger.info("Training IVF index...")
-            self.index.train(embeddings)
-            self.index.nprobe = self.nprobe
-        
+            try:
+                self.index.train(embeddings)
+                self.index.nprobe = self.nprobe
+            except Exception as e:
+                logger.error(f"IVF training failed: {e}, falling back to flat index")
+                # Fallback to flat index
+                self.index_type = 'flat'
+                self.index = self._create_index(n_items)
+                self.index_type = original_index_type
+
         # Add vectors
         self.index.add(embeddings)
-        
+
         # Store mappings
         self.item_ids = list(item_ids)
         self.idx_to_item = {i: item_id for i, item_id in enumerate(item_ids)}
         self.item_to_idx = {item_id: i for i, item_id in enumerate(item_ids)}
-        
+
         self.is_trained = True
         logger.info(f"FAISS index built successfully: {self.index.ntotal} vectors")
     
