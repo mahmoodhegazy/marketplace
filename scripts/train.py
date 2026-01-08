@@ -36,7 +36,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.utils.config import Config
 from src.utils.logger import setup_logger
 from src.data.processor import DataProcessor
-from src.data.dataset import InteractionDataset, collate_interactions
+from src.data.dataset import InteractionDataset, collate_with_negatives
 from src.data.features import FeatureEngineer
 from src.embeddings.fashion_clip import FashionCLIPEmbedder, EmbeddingCache
 from src.models.two_tower import TwoTowerModel
@@ -108,40 +108,43 @@ def parse_args():
 def load_data(config: Config) -> tuple:
     """Load and preprocess data."""
     logger.info("Loading data...")
-    
+
     processor = DataProcessor(config)
-    
-    # Load raw data
-    items_path = Path(config.data.raw_path) / "items.csv"
-    events_path = Path(config.data.raw_path) / "events.csv"
-    
+
+    # Load raw data (cleaning happens internally)
+    items_path = Path(config.data.raw_items_path)
+    events_path = Path(config.data.raw_events_path)
+
     if not items_path.exists() or not events_path.exists():
-        logger.error(f"Data files not found in {config.data.raw_path}")
+        logger.error(f"Data files not found: {items_path}, {events_path}")
         logger.info("Expected files: items.csv, events.csv")
         raise FileNotFoundError("Missing data files")
-    
+
     items_df, events_df = processor.load_data(
         str(items_path),
         str(events_path),
     )
-    
+
     logger.info(f"Loaded {len(items_df)} items and {len(events_df)} events")
-    
-    # Clean data
-    items_df = processor.clean_items(items_df)
-    events_df = processor.clean_events(events_df)
-    
-    # Build interactions
-    interactions_df = processor.build_interactions(events_df)
+
+    # Build interactions (works on internal state)
+    interactions_df = processor.build_interactions()
     logger.info(f"Built {len(interactions_df)} interactions")
-    
-    # Encode features
-    items_df = processor.encode_features(items_df)
-    
-    # Get vocab sizes
-    vocab_sizes = processor.get_vocab_sizes(items_df, events_df)
+
+    # Encode features (works on internal state, returns encoded dfs)
+    items_df, interactions_df = processor.encode_features()
+
+    # Get vocab sizes from processor (use keys expected by TwoTowerModel)
+    vocab_sizes = {
+        'user': processor.vocab_sizes['user'],
+        'item': processor.vocab_sizes['item'],
+        'category': processor.vocab_sizes['category'],
+        'brand': processor.vocab_sizes['brand'],
+        'condition': processor.vocab_sizes['condition'],
+        'size': processor.vocab_sizes['size'],
+    }
     logger.info(f"Vocab sizes: {vocab_sizes}")
-    
+
     return items_df, events_df, interactions_df, processor, vocab_sizes
 
 
@@ -151,64 +154,79 @@ def generate_embeddings(
     skip: bool = False,
 ) -> np.ndarray:
     """Generate or load visual embeddings."""
-    embeddings_path = Path(config.data.embeddings_path) / "visual_embeddings.npy"
-    cache_path = Path(config.data.embeddings_path) / "embedding_cache.pkl"
-    
-    if skip and embeddings_path.exists():
+    embeddings_dir = Path(config.data.embeddings_dir)
+    embeddings_path = embeddings_dir / "visual_embeddings.npy"
+    # Also check for alternative naming from previous runs
+    alt_embeddings_path = embeddings_dir / "embeddings.npy"
+    alt_item_ids_path = embeddings_dir / "item_ids.npy"
+
+    # Auto-detect existing embeddings
+    if embeddings_path.exists():
         logger.info(f"Loading cached embeddings from {embeddings_path}")
         data = np.load(embeddings_path, allow_pickle=True).item()
         return data['embeddings'], data['item_ids']
-    
+    elif alt_embeddings_path.exists() and alt_item_ids_path.exists():
+        logger.info(f"Loading cached embeddings from {alt_embeddings_path}")
+        embeddings = np.load(alt_embeddings_path)
+        # Handle item IDs that may have comma separators (e.g., "1,000")
+        item_ids = [int(str(x).replace(',', '')) for x in np.load(alt_item_ids_path).tolist()]
+        # Check for NaN in loaded embeddings
+        nan_count = np.isnan(embeddings).sum()
+        total_elements = embeddings.size
+        if nan_count > 0:
+            nan_pct = (nan_count / total_elements) * 100
+            logger.warning(f"Loaded embeddings contain {nan_count} NaN values ({nan_pct:.1f}%), replacing with zeros")
+            embeddings = np.nan_to_num(embeddings, nan=0.0)
+            if nan_pct > 50:
+                logger.error(f"CRITICAL: {nan_pct:.1f}% of embeddings are NaN! Consider regenerating with: rm -rf data/embeddings/")
+        logger.info(f"Loaded {len(item_ids)} embeddings, shape: {embeddings.shape}")
+        return embeddings, item_ids
+
+    if skip:
+        raise FileNotFoundError(f"No cached embeddings found in {embeddings_dir}")
+
     logger.info("Generating visual embeddings...")
-    
+
     embedder = FashionCLIPEmbedder(
-        model_name=config.embedding.model_name,
-        device=config.training.device,
+        model_name=config.embeddings.model_name,
+        device=config.embeddings.device,
     )
-    
-    # Get image URLs
-    item_ids = items_df['item_id'].tolist()
-    image_urls = items_df['first_image_url'].tolist()
-    
-    # Filter items with valid URLs
-    valid_items = []
-    valid_urls = []
-    for item_id, url in zip(item_ids, image_urls):
-        if url and isinstance(url, str) and url.startswith('http'):
-            valid_items.append(item_id)
-            valid_urls.append(url)
-    
-    logger.info(f"Generating embeddings for {len(valid_urls)} items with valid URLs")
-    
-    # Load existing cache if available
-    cache = None
-    if cache_path.exists():
-        cache = EmbeddingCache.load(cache_path)
-        logger.info(f"Loaded embedding cache with {len(cache.embeddings)} items")
-    
+
+    # Filter to items with valid URLs
+    valid_items_df = items_df[
+        items_df['primary_image'].notna() &
+        items_df['primary_image'].str.startswith('http', na=False)
+    ].copy()
+
+    logger.info(f"Generating embeddings for {len(valid_items_df)} items with valid URLs")
+
     # Generate embeddings
-    embeddings, successful_ids = embedder.embed_catalog(
-        image_urls=valid_urls,
-        item_ids=valid_items,
-        batch_size=config.embedding.batch_size,
+    embeddings, items_with_embeddings = embedder.embed_catalog(
+        items_df=valid_items_df,
+        image_column='primary_image',
+        batch_size=config.embeddings.batch_size,
     )
-    
-    if len(embeddings) == 0:
+
+    # Get item IDs that have valid embeddings
+    successful_ids = items_with_embeddings[items_with_embeddings['has_embedding']]['item_id'].tolist()
+    valid_embeddings = embeddings[items_with_embeddings['has_embedding'].values]
+
+    if len(valid_embeddings) == 0:
         logger.error("No embeddings generated!")
         raise ValueError("Failed to generate any embeddings")
-    
-    logger.info(f"Generated {len(embeddings)} embeddings")
-    
+
+    logger.info(f"Generated {len(valid_embeddings)} valid embeddings")
+
     # Save embeddings
     embeddings_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(embeddings_path, {
-        'embeddings': embeddings,
+        'embeddings': valid_embeddings,
         'item_ids': successful_ids,
     })
-    
+
     logger.info(f"Saved embeddings to {embeddings_path}")
-    
-    return embeddings, successful_ids
+
+    return valid_embeddings, successful_ids
 
 
 def create_datasets(
@@ -220,10 +238,10 @@ def create_datasets(
     logger.info("Creating datasets...")
     
     # Temporal split
-    interactions_df = interactions_df.sort_values('timestamp')
+    interactions_df = interactions_df.sort_values('last_interaction')
     
     n = len(interactions_df)
-    train_end = int(n * (1 - config.data.test_size - config.data.val_size))
+    train_end = int(n * (1 - config.data.test_size - config.data.validation_size))
     val_end = int(n * (1 - config.data.test_size))
     
     train_interactions = interactions_df.iloc[:train_end]
@@ -252,7 +270,7 @@ def create_datasets(
         train_dataset,
         batch_size=config.training.batch_size,
         shuffle=True,
-        collate_fn=collate_interactions,
+        collate_fn=collate_with_negatives,
         num_workers=4,
         pin_memory=True,
     )
@@ -261,7 +279,7 @@ def create_datasets(
         val_dataset,
         batch_size=config.training.batch_size,
         shuffle=False,
-        collate_fn=collate_interactions,
+        collate_fn=collate_with_negatives,
         num_workers=4,
         pin_memory=True,
     )
@@ -276,36 +294,65 @@ def train_model(
     embedding_item_ids: list,
     train_loader: DataLoader,
     val_loader: DataLoader,
+    processor: DataProcessor,
     experiment_name: str = None,
 ) -> TwoTowerModel:
     """Train two-tower model."""
     logger.info("Initializing model...")
-    
+
     # Create embedding lookup
     embedding_dim = visual_embeddings.shape[1] if len(visual_embeddings) > 0 else 512
-    
+
     # Create full embedding matrix with zeros for items without embeddings
-    num_items = vocab_sizes['num_items']
+    num_items = vocab_sizes['item']
     full_embeddings = np.zeros((num_items, embedding_dim), dtype=np.float32)
-    
-    item_id_to_idx = {item_id: i for i, item_id in enumerate(embedding_item_ids)}
+
+    # Build item_id -> item_idx mapping from processor's encoder
+    # The model uses item_idx (0 to N-1), not item_id (original IDs)
+    # Convert classes_ to same type as embedding_item_ids for reliable matching
+    item_id_to_idx = {
+        int(item_id): idx
+        for idx, item_id in enumerate(processor.item_encoder.classes_)
+    }
+
+    # Populate embeddings using item_idx, not item_id
+    mapped_count = 0
     for item_id, embedding in zip(embedding_item_ids, visual_embeddings):
-        if item_id < num_items:
-            full_embeddings[item_id] = embedding
-    
-    # Initialize model
+        item_id_int = int(item_id)
+        if item_id_int in item_id_to_idx:
+            item_idx = item_id_to_idx[item_id_int]
+            full_embeddings[item_idx] = embedding
+            mapped_count += 1
+
+    logger.info(f"Mapped {mapped_count}/{len(embedding_item_ids)} visual embeddings to item indices")
+
+    if mapped_count == 0:
+        logger.warning("WARNING: No embeddings were mapped! Check if item_ids match between embeddings and processor")
+        # Debug: show sample item IDs from both sources
+        sample_emb_ids = embedding_item_ids[:5] if len(embedding_item_ids) > 0 else []
+        sample_proc_ids = list(item_id_to_idx.keys())[:5]
+        logger.warning(f"Sample embedding item_ids: {sample_emb_ids}")
+        logger.warning(f"Sample processor item_ids: {sample_proc_ids}")
+
+    # Check for NaN in embeddings
+    nan_count = np.isnan(full_embeddings).sum()
+    if nan_count > 0:
+        logger.warning(f"Found {nan_count} NaN values in visual embeddings, replacing with zeros")
+        full_embeddings = np.nan_to_num(full_embeddings, nan=0.0)
+
+    # Initialize model (pass two_tower config, not main config)
     model = TwoTowerModel(
-        config=config,
+        config=config.two_tower,
         vocab_sizes=vocab_sizes,
         visual_embeddings=torch.tensor(full_embeddings),
     )
     
     logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
-    # Initialize trainer
+    # Initialize trainer (pass training config, not main config)
     trainer = Trainer(
         model=model,
-        config=config,
+        config=config.training,
         experiment_name=experiment_name,
     )
     
@@ -317,7 +364,7 @@ def train_model(
     )
     
     # Save final model
-    output_dir = Path(config.serving.model_path)
+    output_dir = Path(config.training.checkpoint_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     trainer.save_checkpoint(output_dir / "final_model.pt")
@@ -331,6 +378,37 @@ def train_model(
     return model
 
 
+def _validate_embeddings(embeddings: np.ndarray, name: str) -> np.ndarray:
+    """Validate and clean embeddings before FAISS indexing."""
+    embeddings = np.ascontiguousarray(embeddings.astype(np.float32))
+
+    # Check shape
+    logger.info(f"{name} shape: {embeddings.shape}")
+
+    # Check for NaN
+    nan_count = np.isnan(embeddings).sum()
+    if nan_count > 0:
+        logger.warning(f"{name}: Found {nan_count} NaN values, replacing with zeros")
+        embeddings = np.nan_to_num(embeddings, nan=0.0)
+
+    # Check for Inf
+    inf_count = np.isinf(embeddings).sum()
+    if inf_count > 0:
+        logger.warning(f"{name}: Found {inf_count} Inf values, clipping")
+        embeddings = np.clip(embeddings, -1e10, 1e10)
+
+    # Check stats
+    logger.info(f"{name} stats: min={embeddings.min():.4f}, max={embeddings.max():.4f}, mean={embeddings.mean():.4f}")
+
+    # Check for zero vectors
+    norms = np.linalg.norm(embeddings, axis=1)
+    zero_count = (norms < 1e-8).sum()
+    if zero_count > 0:
+        logger.warning(f"{name}: {zero_count} near-zero vectors")
+
+    return embeddings
+
+
 def build_index(
     model: TwoTowerModel,
     items_df: pd.DataFrame,
@@ -340,31 +418,49 @@ def build_index(
 ) -> None:
     """Build FAISS indices for serving."""
     logger.info("Building FAISS indices...")
-    
-    output_dir = Path(config.serving.model_path)
-    
+
+    output_dir = Path(config.training.checkpoint_dir)
+
     # Build two-tower item embeddings index
     model.eval()
     with torch.no_grad():
-        item_embeddings = model.generate_all_item_embeddings()
-    
-    item_embeddings_np = item_embeddings.cpu().numpy()
+        item_embeddings = model.generate_all_item_embeddings(items_df)
+
+    item_embeddings_np = item_embeddings
     item_ids = list(range(len(item_embeddings_np)))
-    
+
+    # Validate embeddings before FAISS
+    item_embeddings_np = _validate_embeddings(item_embeddings_np, "Two-tower embeddings")
+
+    # Determine index type based on dataset size
+    # IVF needs enough data to train clusters, minimum ~256 items recommended
+    n_items = len(item_ids)
+    index_type = "ivf" if n_items >= 256 else "flat"
+    if index_type == "flat" and n_items < 256:
+        logger.info(f"Using flat index (only {n_items} items, need 256+ for IVF)")
+
     two_tower_retriever = FAISSRetriever(
-        dim=config.two_tower.embedding_dim,
-        index_type=config.serving.index_type,
+        dim=config.two_tower.final_embedding_dim,
+        index_type=index_type,
         metric='cosine',
     )
     two_tower_retriever.build(item_embeddings_np, item_ids)
     two_tower_retriever.save(output_dir / "two_tower_index")
-    
+
     logger.info(f"Built two-tower index with {len(item_ids)} items")
-    
+
+    # Validate visual embeddings
+    visual_embeddings = _validate_embeddings(visual_embeddings, "Visual embeddings")
+
     # Build visual embeddings index
+    n_visual = len(embedding_item_ids)
+    visual_index_type = "ivf" if n_visual >= 256 else "flat"
+    if visual_index_type == "flat" and n_visual < 256:
+        logger.info(f"Using flat index for visual (only {n_visual} items)")
+
     visual_retriever = FAISSRetriever(
         dim=visual_embeddings.shape[1],
-        index_type=config.serving.index_type,
+        index_type=visual_index_type,
         metric='cosine',
     )
     visual_retriever.build(visual_embeddings, embedding_item_ids)
@@ -393,7 +489,7 @@ def evaluate_model(
     
     # Generate all item embeddings
     with torch.no_grad():
-        item_embeddings = model.generate_all_item_embeddings()
+        item_embeddings = model.generate_all_item_embeddings(items_df)
     
     # Group test interactions by user
     user_ground_truth = test_interactions.groupby('user_idx')['item_idx'].apply(set).to_dict()
@@ -411,7 +507,7 @@ def evaluate_model(
             recs = model.recommend(
                 user_idx=user_idx_tensor,
                 item_embeddings=item_embeddings,
-                k=100,
+                top_k=100,
             )
         
         recommendations[user_idx] = recs[0].tolist()
@@ -434,7 +530,7 @@ def evaluate_model(
             logger.info(f"{metric}: {value:.4f}")
     
     # Save results
-    output_dir = Path(config.serving.model_path)
+    output_dir = Path(config.training.checkpoint_dir)
     with open(output_dir / "evaluation_results.json", 'w') as f:
         json.dump(results, f, indent=2)
     
@@ -447,8 +543,7 @@ def main():
     
     # Setup logging
     setup_logger(
-        log_dir="logs",
-        log_name=f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        log_file=f"logs/train_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
     )
     
     logger.info("=" * 60)
@@ -456,19 +551,20 @@ def main():
     logger.info("=" * 60)
     
     # Load config
-    config = Config.from_yaml(args.config)
+    config = Config(args.config)
     
     # Apply command line overrides
     if args.data_path:
-        config.data.raw_path = args.data_path
+        config.data.raw_items_path = f"{args.data_path}/items.csv"
+        config.data.raw_events_path = f"{args.data_path}/events.csv"
     if args.output_dir:
-        config.serving.model_path = args.output_dir
+        config.training.checkpoint_dir = args.output_dir
     if args.epochs:
         config.training.epochs = args.epochs
     if args.batch_size:
         config.training.batch_size = args.batch_size
     if args.device:
-        config.training.device = args.device
+        config.embeddings.device = args.device
     
     logger.info(f"Config: {config}")
     
@@ -499,11 +595,12 @@ def main():
                 embedding_item_ids=embedding_item_ids,
                 train_loader=train_loader,
                 val_loader=val_loader,
+                processor=processor,
                 experiment_name=args.experiment_name,
             )
         else:
             # Load existing model
-            model_path = Path(config.serving.model_path) / "model.pt"
+            model_path = Path(config.training.checkpoint_dir) / "model.pt"
             if not model_path.exists():
                 raise FileNotFoundError(f"Model not found at {model_path}")
             

@@ -127,16 +127,17 @@ class Trainer:
             mode='min',
             factor=0.5,
             patience=self.config.reduce_lr_patience,
-            min_lr=self.config.min_lr,
-            verbose=True,
+            min_lr=float(self.config.min_lr),
         )
     
     def _setup_mlflow(self):
         """Set up MLflow experiment tracking."""
         try:
             import mlflow
-            
-            mlflow.set_experiment(self.experiment_name)
+
+            # Use default experiment name if none provided
+            exp_name = self.experiment_name or "freak-recommendations"
+            mlflow.set_experiment(exp_name)
             self.mlflow_run = mlflow.start_run()
             
             # Log config
@@ -316,11 +317,13 @@ class Trainer:
         accuracy = (pos_scores > neg_scores).float().mean().item()
         
         # Mean Reciprocal Rank approximation
+        # neg_emb is (batch, num_neg, dim), user_emb is (batch, dim)
+        neg_scores_all = torch.bmm(neg_emb, user_emb.unsqueeze(-1)).squeeze(-1)  # (batch, num_neg)
         all_scores = torch.cat([
-            pos_scores.unsqueeze(-1),
-            neg_emb @ user_emb.unsqueeze(-1).squeeze(-1).T.diagonal().unsqueeze(-1)
-        ], dim=-1)
-        
+            pos_scores.unsqueeze(-1),  # (batch, 1)
+            neg_scores_all,  # (batch, num_neg)
+        ], dim=-1)  # (batch, 1 + num_neg)
+
         # Simplified MRR (position of positive among all)
         ranks = (all_scores[:, 1:] >= all_scores[:, 0:1]).sum(dim=-1) + 1
         mrr = (1.0 / ranks.float()).mean().item()
