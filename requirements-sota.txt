@@ -1,0 +1,23 @@
+# SOTA Recommendation Libraries for comparison
+# Install with: pip install -r requirements-sota.txt
+
+# Classic Collaborative Filtering
+implicit>=0.7.0  # ALS, BPR, Item-KNN
+
+# Hybrid Models
+lightfm>=1.17  # WARP, BPR with content features
+
+# Deep Learning RecSys
+recbole>=1.2.0  # 100+ models: LightGCN, SASRec, BERT4Rec, etc.
+
+# External APIs (optional)
+recombee-api-client>=4.0.0  # Recombee API
+
+# Visualization & Analysis
+scikit-learn>=1.0
+matplotlib>=3.5
+seaborn>=0.12
+umap-learn>=0.5  # For embedding visualization
+
+# Optional: GPU acceleration for implicit
+# implicit[gpu]  # Requires CUDA
